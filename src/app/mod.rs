@@ -48,9 +48,16 @@ impl App {
     /// Runs the region flow (see `actions::read_region`), guarded so a
     /// second call while one is already in flight is a no-op.
     ///
-    /// Returns `Ok(false)` when skipped because the player was already
-    /// busy, `Ok(true)` when it ran to completion.
-    pub fn read_region(&self, selector: &dyn RegionSelector, ocr: &dyn OcrEngine) -> Result<bool> {
+    /// Returns `Ok(None)` when skipped because the player was already
+    /// busy; `Ok(Some(outcome))` when it ran to completion, carrying
+    /// which of the three things happened (cancelled / found nothing /
+    /// spoke) — the caller (`src/bin/aloud.rs`) uses that to decide
+    /// whether a notification is warranted.
+    pub fn read_region(
+        &self,
+        selector: &dyn RegionSelector,
+        ocr: &dyn OcrEngine,
+    ) -> Result<Option<actions::Outcome>> {
         self.guarded(|| actions::read_region(selector, ocr, &self.player, self.speed))
     }
 
@@ -59,17 +66,27 @@ impl App {
     /// a Service-delivered selection share the one `Player`, so pressing
     /// the hotkey while a selection is still being read must also be a
     /// no-op, not a second concurrent `speak()`.
+    ///
+    /// Returns `Ok(false)` when skipped because the player was already
+    /// busy, `Ok(true)` when it ran to completion.
     pub fn speak_selection(&self, text: &str) -> Result<bool> {
         self.guarded(|| actions::speak_selection(text, &self.player, self.speed))
+            .map(|ran| ran.is_some())
     }
 
-    fn guarded<F: FnOnce() -> Result<()>>(&self, f: F) -> Result<bool> {
+    /// Runs `f` unless a call is already in flight, in which case it is
+    /// skipped (`Ok(None)`) rather than run concurrently. `T` is generic
+    /// so both callers above can keep their own return shape (`read_region`
+    /// needs to carry `actions::Outcome`; `speak_selection` only ever
+    /// needed a bool, preserved via the `.map` above) without duplicating
+    /// this guard.
+    fn guarded<T, F: FnOnce() -> Result<T>>(&self, f: F) -> Result<Option<T>> {
         if self
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Ok(false);
+            return Ok(None);
         }
         // RAII release rather than a plain `store(false, ...)` after `f()`
         // returns: `f()` calls into `Player::speak`, which calls into
@@ -81,7 +98,7 @@ impl App {
         // `busy == true` forever and silently no-ops. `_release`'s `Drop`
         // runs on the ordinary-return path and on an unwind alike.
         let _release = BusyRelease(&self.busy);
-        f().map(|()| true)
+        f().map(Some)
     }
 }
 

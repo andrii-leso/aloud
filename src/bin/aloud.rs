@@ -4,6 +4,7 @@
 //! one shared `Player`), and exposes tray items for both actions plus
 //! Stop.
 
+use aloud::app::actions::Outcome;
 use aloud::app::App;
 use aloud::capture::macos::ScreenCapture;
 use aloud::ocr::macos::VisionOcr;
@@ -32,14 +33,56 @@ struct Runtime {
     ocr: VisionOcr,
 }
 
+/// Shows a macOS notification banner. There is no window to surface a
+/// failure in, a tray tooltip change is easy to miss, and a stderr line
+/// is invisible once the app is launched from a bundled `.app` (no
+/// attached terminal) — this is the pragmatic no-new-dependency route: an
+/// `osascript` subprocess is always present on macOS. Each call is a
+/// single one-shot `display notification`; callers only ever invoke this
+/// once per user-triggered event (one hotkey press, one Service
+/// delivery), so it never loops or repeats on its own.
+fn notify(title: &str, message: &str) {
+    // AppleScript string literals: escape backslashes first, then quotes,
+    // so a message containing either (an OCR stderr line can) doesn't
+    // break out of the quoted string.
+    let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        escape(message),
+        escape(title)
+    );
+    if let Err(e) = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .status()
+    {
+        eprintln!("[aloud] failed to show notification: {e}");
+    }
+}
+
 /// Runs `read_region` on a background thread so the caller (the shortcut
 /// handler or the tray event handler, both on the main thread) returns
 /// immediately. `App::read_region` itself guards against a second call
 /// landing while one is already in flight.
+///
+/// Notification policy: a busy skip and a deliberate Escape cancel are
+/// both silent — the first because a read is already underway, the
+/// second because a cancel is not a failure. An empty result (captured
+/// something, found no text) and any `Err` (most importantly the missing
+/// Screen Recording permission from Task 3, whose message already names
+/// System Settings and the required restart — see
+/// `src/capture/macos.rs`) are surfaced, since both look identical to
+/// "the hotkey did nothing" otherwise.
 fn spawn_read_region(rt: Arc<Runtime>) {
-    std::thread::spawn(move || {
-        if let Err(e) = rt.app.read_region(&rt.selector, &rt.ocr) {
+    std::thread::spawn(move || match rt.app.read_region(&rt.selector, &rt.ocr) {
+        Ok(None) | Ok(Some(Outcome::Cancelled)) | Ok(Some(Outcome::Spoke)) => {}
+        Ok(Some(Outcome::Empty)) => {
+            eprintln!("[aloud] read_region: no text found in the captured region");
+            notify("Aloud", "No text found in that region.");
+        }
+        Err(e) => {
             eprintln!("[aloud] read_region failed: {e:#}");
+            notify("Aloud", &e.to_string());
         }
     });
 }
@@ -100,6 +143,7 @@ fn main() {
                     std::thread::spawn(move || {
                         if let Err(e) = rt.app.speak_selection(&text) {
                             eprintln!("[aloud] speak_selection failed: {e:#}");
+                            notify("Aloud", &e.to_string());
                         }
                     });
                 }))?;

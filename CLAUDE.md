@@ -15,6 +15,7 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 | Anything at all | [`../../../docs/superpowers/specs/2026-08-08-aloud-tts-reader-design.md`](../../../docs/superpowers/specs/2026-08-08-aloud-tts-reader-design.md) — the design. Seams, platform matrix, measured performance budget, licence obligations. |
 | TTS / voices / engine work | [`../../../docs/capabilities.md`](../../../docs/capabilities.md) §1 (engines, measured numbers) and its licence section. |
 | Windows-side work | [`../../../BKM/PC-Queue/README.md`](../../../BKM/PC-Queue/README.md) — the Windows half is built on the PC, brief-driven. |
+| Building, running, or verifying the app; permissions | [`README.md`](README.md) — the dev doc: what it does, how to build (`packaging/make-app.sh`), permissions, known limits. |
 | Anything touching the EULA or selling | Dispatch Rektor. Do not draft licence terms unaided. |
 
 ---
@@ -35,7 +36,7 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 
 ## Stack
 
-- **Tauri 2**, Rust core, web UI. `.dmg` and `.msi` from the Tauri bundler.
+- **Tauri 2** (menubar shell, global-shortcut plugin, tray), Rust core, web UI. Packaging on macOS is **hand-assembled**, not the Tauri CLI bundler: `cargo install tauri-cli` drove this M1 Air to 2.0 GB free, so `packaging/make-app.sh` builds `target/Aloud.app` directly (see `README.md`). Do not reach for `cargo tauri build` here. Windows packaging (M6) is undecided — revisit then, it does not inherit this constraint.
 - **TTS:** Supertonic 3 via its first-party Rust SDK over ONNX Runtime. Defaults **F5** (female) and **M5** (male). 31 languages; `lingua-rs` picks the tag. Kokoro stays wired as the licence-clean fallback.
 - **OCR:** bundled Swift helper → Vision (macOS); `Windows.Media.Ocr` via the `windows` crate (Windows). Never Tesseract.
 - **Model:** 385 MB, downloaded on first run, not shipped in the installer. All ten voice styles together are under 3 MB — ship them all.
@@ -52,7 +53,8 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 | `src/bin/aloud_say.rs` | The CLI |
 | `src/vendor/` | Vendored MIT Supertonic engine — never edit |
 | `dist/` | Placeholder frontend Tauri requires; never displayed in M3 |
-| `Info.plist` | NSServices declaration, merged into the bundle by Tauri |
+| `Info.plist` | NSServices declaration — the single source of truth for it, merged into `target/Aloud.app`'s bundle Info.plist by `packaging/make-app.sh` (PlistBuddy `Merge`), not by Tauri |
+| `packaging/make-app.sh` | Hand-assembles `target/Aloud.app` (see Stack, above) — builds the release binary + the Swift OCR helper, writes the bundle Info.plist, ad-hoc codesigns |
 | `helpers/macos-ocr/` | Swift OCR helper binary source |
 | `tests/fixtures/` | Golden screenshots for OCR tests, text fixtures for the normalizer |
 

@@ -2,9 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Merged into the generated bundle Info.plist by the Tauri CLI, which
-       reads `<tauri_dir>/Info.plist` (the directory holding tauri.conf.json,
-       i.e. this crate root) and merges its keys over the generated ones.
+  <!-- The single source of truth for the NSServices declaration. Merged
+       into target/Aloud.app's bundle Info.plist by packaging/make-app.sh
+       (PlistBuddy `Merge`) — NOT by the Tauri CLI bundler, which this
+       project deliberately does not use for macOS packaging (see
+       CLAUDE.md's Stack section for why). Keep this file containing only
+       what make-app.sh should merge wholesale into the bundle plist.
 
        NSMessage is the selector STEM: "readSelection" means macOS invokes
        -readSelection:userData:error: on the registered services provider.

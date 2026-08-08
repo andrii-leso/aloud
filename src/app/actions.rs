@@ -21,6 +21,26 @@ use crate::text::normalize::normalize_ocr;
 use anyhow::Result;
 use std::path::Path;
 
+/// What a completed `read_region` attempt actually did. `Player::speak`
+/// and permission/OCR failures are unambiguous (an `Err`), but the two
+/// success paths need to stay distinguishable to the caller: a deliberate
+/// cancel (Escape) must never surface a notification, while "captured
+/// something but found no text" is worth telling the user about — see the
+/// notification handling in `src/bin/aloud.rs`. Collapsing both into a
+/// bare `Ok(())`, as this used to do, made that distinction impossible
+/// downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The user pressed Escape. Silent, on purpose.
+    Cancelled,
+    /// Capture (and OCR, for the region path) succeeded but there was no
+    /// usable text.
+    Empty,
+    /// Text was normalized, a language was detected, and `Player::speak`
+    /// was called.
+    Spoke,
+}
+
 /// Deletes the wrapped path when dropped — on ordinary return, on an
 /// early `?`, and on a panic unwind alike. `ocr.recognise` runs over
 /// whatever text happened to be on the user's screen; it is not a
@@ -37,9 +57,10 @@ impl Drop for DeleteOnDrop<'_> {
 /// Captures a screen region, OCRs it, and speaks the result.
 ///
 /// Flow: `selector.select()` -> `Ok(None)` means the user pressed Escape,
-/// a deliberate cancel, so this returns `Ok(())` silently, not an error ->
-/// `ocr.recognise()` -> `normalize_ocr` -> an empty result means nothing
-/// worth speaking, returns silently -> `detect_lang` -> `player.speak()`.
+/// a deliberate cancel, so this returns `Ok(Outcome::Cancelled)`, not an
+/// error -> `ocr.recognise()` -> `normalize_ocr` -> an empty result means
+/// nothing worth speaking, returns `Ok(Outcome::Empty)` -> `detect_lang`
+/// -> `player.speak()` -> `Ok(Outcome::Spoke)`.
 ///
 /// `RegionSelector::select` documents the caller as the owner of deleting
 /// the returned temp file (it is a screenshot of the user's screen). This
@@ -50,9 +71,9 @@ pub fn read_region(
     ocr: &dyn OcrEngine,
     player: &Player,
     speed: f32,
-) -> Result<()> {
+) -> Result<Outcome> {
     let Some(image_path) = selector.select()? else {
-        return Ok(());
+        return Ok(Outcome::Cancelled);
     };
 
     let text = {
@@ -64,11 +85,12 @@ pub fn read_region(
 
     let normalized = normalize_ocr(&text);
     if normalized.is_empty() {
-        return Ok(());
+        return Ok(Outcome::Empty);
     }
 
     let lang = detect_lang(&normalized);
-    player.speak(&normalized, &lang, speed)
+    player.speak(&normalized, &lang, speed)?;
+    Ok(Outcome::Spoke)
 }
 
 /// Speaks text that has already been extracted. No capture, no OCR, no
