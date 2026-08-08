@@ -6,6 +6,12 @@
 use aloud::play::sink::{AudioSink, RodioSink};
 use aloud::tts::Pcm;
 use std::f32::consts::PI;
+use std::time::{Duration, Instant};
+
+/// Same stall guard as `Player::wait_for_drain` (src/play/player.rs): if
+/// the device disappears mid-playback, `queued()` never changes and this
+/// loop would otherwise spin forever with no error and no recovery.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn main() -> anyhow::Result<()> {
     let sample_rate = 44_100u32;
@@ -30,7 +36,19 @@ fn main() -> anyhow::Result<()> {
     sink.append(pcm)?;
 
     println!("playing 1s sine wave at {freq} Hz...");
+    let mut last_queued = sink.queued();
+    let mut last_changed = Instant::now();
     while sink.queued() > 0 {
+        let queued = sink.queued();
+        if queued != last_queued {
+            last_queued = queued;
+            last_changed = Instant::now();
+        } else if last_changed.elapsed() >= STALL_TIMEOUT {
+            sink.stop();
+            anyhow::bail!(
+                "audio device appears stalled: queue depth stuck at {queued} for {STALL_TIMEOUT:?}"
+            );
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     // Give the device a moment to flush the final buffer before the sink

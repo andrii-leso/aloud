@@ -8,14 +8,15 @@ use std::num::NonZero;
 /// and so rodio's API churn is contained to one file.
 pub trait AudioSink: Send + Sync {
     fn append(&self, pcm: Pcm) -> Result<()>;
-    /// Buffers still waiting to play.
+    /// Number of buffers outstanding, including the one currently playing
+    /// (not just the ones still waiting behind it).
     fn queued(&self) -> usize;
     fn stop(&self);
 }
 
 pub struct RodioSink {
-    // Fill in per the verified 0.22 API (see Step 3a). Playback stops when
-    // the device handle is dropped, so the handle must be held here.
+    // Playback stops when the device handle is dropped, so the handle
+    // must be held here.
     inner: RodioInner,
 }
 
