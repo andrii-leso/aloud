@@ -23,6 +23,19 @@ use std::time::Instant;
 /// The test also asserts that the paragraph produced multiple appends (count > 1),
 /// which alone fails if chunking is removed. This is the cheapest, most direct guard.
 ///
+/// **Why three measurements, not two.** `cargo test --release` runs this binary
+/// concurrently with `engine_smoke.rs` and `engine_thread.rs` — three ONNX test
+/// binaries doing real inference at once, which saturates the machine. If the two
+/// measurements below (first-audio, whole-paragraph) land under different load
+/// levels, monotonic drift between them corrupts the ratio even though the
+/// underlying chunking behaviour is unchanged (observed: ratio 0.82 against the
+/// 0.70 gate under concurrent load; passes reliably via `--test latency_budget`
+/// alone). Fix: measure whole-paragraph synthesis, then first-audio, then
+/// whole-paragraph again, and compare first-audio to the *mean* of the two
+/// whole-paragraph measurements. Drift that occurs between the first whole
+/// measurement and the last raises (or lowers) both halves of the ratio equally,
+/// instead of only the denominator.
+///
 /// **Run in release mode** — debug ONNX inference is ~10x slower and would fail
 /// this test misleadingly.
 ///
@@ -39,7 +52,15 @@ fn first_sentence_is_much_faster_than_whole_paragraph() {
                      without processing. If you require an extension, contact the office in \
                      writing before the deadline expires.";
 
-    // Time first audio via Player::speak() with a recording sink.
+    // Measurement 1 of 3: unchunked synthesis (direct engine call on whole paragraph).
+    let t0 = Instant::now();
+    let pcm1 = engine
+        .synthesize(paragraph, "en", 1.0)
+        .expect("whole paragraph synthesis (1) should succeed");
+    let whole_ms_1 = t0.elapsed().as_millis();
+    assert!(!pcm1.samples.is_empty());
+
+    // Measurement 2 of 3: time first audio via Player::speak() with a recording sink.
     let sink = Arc::new(RecordingSink::new());
     let player = Player::new(engine.clone(), sink.clone());
 
@@ -59,26 +80,30 @@ fn first_sentence_is_much_faster_than_whole_paragraph() {
          Got {append_count} appends. If chunking is removed, this fails."
     );
 
-    // Measure unchunked synthesis (direct engine call on whole paragraph).
+    // Measurement 3 of 3: unchunked synthesis again, to bracket measurement 2.
     let t0 = Instant::now();
-    let pcm = engine
+    let pcm2 = engine
         .synthesize(paragraph, "en", 1.0)
-        .expect("whole paragraph synthesis should succeed");
-    let whole_ms = t0.elapsed().as_millis();
+        .expect("whole paragraph synthesis (2) should succeed");
+    let whole_ms_2 = t0.elapsed().as_millis();
+    assert!(!pcm2.samples.is_empty());
 
-    assert!(!pcm.samples.is_empty());
-
-    // Assert the ratio.
-    let ratio = (first_audio_ms as f64) / (whole_ms as f64);
+    // Compare against the mean of the two whole-paragraph measurements, so
+    // monotonic load drift across the three measurements cancels out instead of
+    // only inflating (or deflating) one side of the ratio.
+    let whole_ms_mean = (whole_ms_1 + whole_ms_2) as f64 / 2.0;
+    let ratio = (first_audio_ms as f64) / whole_ms_mean;
     println!(
-        "first_audio_ms={}, whole_paragraph_ms={}, ratio={:.2}, append_count={}",
-        first_audio_ms, whole_ms, ratio, append_count
+        "whole_paragraph_ms_1={whole_ms_1}, first_audio_ms={first_audio_ms}, \
+         whole_paragraph_ms_2={whole_ms_2}, whole_paragraph_ms_mean={whole_ms_mean:.1}, \
+         ratio={ratio:.2}, append_count={append_count}"
     );
 
     assert!(
-        first_audio_ms as u128 <= (whole_ms * 70 / 100),
-        "first audio (via chunked speak) should be ≤70% as long as whole-paragraph synthesis. \
-         first={first_audio_ms}ms, whole={whole_ms}ms, ratio={ratio:.2}. \
+        (first_audio_ms as f64) <= whole_ms_mean * 0.70,
+        "first audio (via chunked speak) should be ≤70% as long as mean whole-paragraph \
+         synthesis. first={first_audio_ms}ms, whole_mean={whole_ms_mean:.1}ms, ratio={ratio:.2} \
+         (raw: whole_1={whole_ms_1}ms, whole_2={whole_ms_2}ms). \
          If ratio approaches 1.0, chunking may have stopped working. \
          If append_count is 1, chunking is definitely broken."
     );
