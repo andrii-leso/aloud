@@ -28,7 +28,8 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 5. **First audio must arrive far sooner than whole-passage synthesis, and it is tested.** The Chunker exists solely for this. The guard is a **ratio** (`tests/latency_budget.rs`): time from `Player::speak` to the first buffer reaching the sink must be ≤ 70% of one-shot whole-paragraph synthesis, plus an append-count check. Do not "simplify" the chunker away, and do not replace the ratio with an absolute millisecond budget — an absolute number asserts a property of the *machine*, not the code, and fails on any busy laptop. Measured 2026-08-08: **synthesis speed is wholly load-dependent** — the same sentence takes ~7s at load 4 and ~15s at load 24 on this M1 Air, in both the Rust build and the Python reference. The "~1.5s to first word" figure in the design spec holds only on a genuinely idle machine. An absolute 2.0s check exists but is `#[ignore]`d for that reason.
 6. **The Windows half cannot be built or tested on the Mac.** WinRT bindings do not compile on macOS. `cfg`-gate per platform; finish macOS fully first; build on the PC via a `BKM/PC-Queue/` brief.
 7. **Everything platform- or engine-specific lives behind a seam** (`RegionSelector`, `OcrEngine`, `SelectionGrabber`, `TtsEngine`). If a platform `#[cfg]` is leaking into pipeline logic, the seam is in the wrong place.
-8. **Check `df -h /` before installing toolchains or models.** The M1 Air is small and has run critically low before.
+8. **Check `df -h /` before installing toolchains or models, and again after any build.** The M1 Air is small and has run critically low before — it hit 2.3 GB free during the M3 Tauri build.
+9. **Build and test in `--release`, not debug.** `target/debug` costs ~3 GB on top of release's ~2.2 GB and offers nothing here: ONNX inference in a debug build is several times slower, so the timing-sensitive tests are misleading there anyway. A stray `cargo test` (which defaults to debug) recreates the whole 3 GB tree. If you find `target/debug` present and disk is tight, deleting it is safe.
 
 ---
 
@@ -46,8 +47,12 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 
 | Folder | Purpose |
 |---|---|
-| `src-tauri/` | Rust core: seams, pipeline, hotkeys, tray |
-| `src/` | Web UI: pill, settings window, region overlay |
+| `src/` | The whole Rust crate: library (text, tts, play, ocr, capture, selection) + binaries |
+| `src/bin/aloud.rs` | The Tauri menubar app |
+| `src/bin/aloud_say.rs` | The CLI |
+| `src/vendor/` | Vendored MIT Supertonic engine — never edit |
+| `dist/` | Placeholder frontend Tauri requires; never displayed in M3 |
+| `Info.plist` | NSServices declaration, merged into the bundle by Tauri |
 | `helpers/macos-ocr/` | Swift OCR helper binary source |
 | `tests/fixtures/` | Golden screenshots for OCR tests, text fixtures for the normalizer |
 
