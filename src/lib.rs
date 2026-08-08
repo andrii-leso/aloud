@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod ocr;
 pub mod play;
 pub mod text;
