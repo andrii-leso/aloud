@@ -34,11 +34,14 @@ fn is_page_number_block(block: &str) -> bool {
 ///    OCR routinely leaves trailing spaces on otherwise-blank lines
 ///    (e.g. `"\n \n"`), and every later pass depends on a blank line
 ///    being pristine `"\n\n"`.
-/// 3. Drop page-number blocks on the now-pristine `"\n\n"` boundaries.
-///    Splitting the whole document into blocks (rather than an anchored
-///    regex requiring `\n\n` on both sides) is what catches a page number
-///    at the very start or end of the text, where one side has no
-///    neighbouring blank line at all.
+/// 3. Drop page-number blocks on the now-pristine `"\n\n"` boundaries,
+///    but only when the document has more than one block. Splitting on
+///    `"\n\n"` (rather than an anchored regex requiring it on both sides)
+///    is what catches a page number at the very start or end of the
+///    text, where one side has no neighbouring blank line at all — but
+///    a *single*-block document has no page-number structure to strip:
+///    a bare number there is content someone selected on purpose (e.g.
+///    "42"), not a footer, and must be read aloud, not silenced.
 /// 4. Hyphen rejoin, before soft breaks would obscure the split word.
 /// 5. Soft-break join to a fixpoint.
 /// 6. Collapse whitespace runs and trim the result.
@@ -47,11 +50,15 @@ pub fn normalize_ocr(input: &str) -> String {
 
     let s: String = s.split('\n').map(str::trim).collect::<Vec<_>>().join("\n");
 
-    let s: String = s
-        .split("\n\n")
-        .filter(|block| !is_page_number_block(block))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let has_multiple_blocks = s.split("\n\n").count() > 1;
+    let s: String = if has_multiple_blocks {
+        s.split("\n\n")
+            .filter(|block| !is_page_number_block(block))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    } else {
+        s
+    };
 
     let mut s = re_hyphen_break().replace_all(&s, "$1$2").into_owned();
 
@@ -178,5 +185,19 @@ mod tests {
             normalize_ocr("7\n\nDer Antrag wurde abgelehnt."),
             "Der Antrag wurde abgelehnt."
         );
+    }
+
+    #[test]
+    fn speaks_a_bare_number_that_is_the_whole_selection() {
+        // Regression: the block-drop rewrite applied the page-number filter
+        // even to a single-block document, so selecting just a number
+        // ("42") went silent. A lone number with no surrounding paragraph
+        // structure is content the user selected on purpose, not a footer.
+        assert_eq!(normalize_ocr("42"), "42");
+    }
+
+    #[test]
+    fn speaks_a_bare_four_digit_number_that_is_the_whole_selection() {
+        assert_eq!(normalize_ocr("1234"), "1234");
     }
 }
