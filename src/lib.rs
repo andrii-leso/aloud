@@ -1,3 +1,4 @@
+pub mod ocr;
 pub mod play;
 pub mod text;
 pub mod tts;
