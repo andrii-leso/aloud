@@ -1,3 +1,4 @@
+pub mod tts;
 pub mod vendor;
 
 use std::path::PathBuf;
