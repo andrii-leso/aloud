@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2.3.2"
 ort = "=2.0.0-rc.7"
 # ort's own Cargo.toml pins ort-sys loosely ("2.0.0-rc.7"), which without
 # this line resolves to the newest matching pre-release, ort-sys 2.0.0-rc.13.
@@ -36,3 +41,7 @@ dirs = "5.0"
 [[bin]]
 name = "aloud-say"
 path = "src/bin/aloud_say.rs"
+
+[[bin]]
+name = "aloud"
+path = "src/bin/aloud.rs"
