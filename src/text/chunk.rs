@@ -278,4 +278,46 @@ mod tests {
             assert!(chunk.chars().count() > 0, "No empty chunks");
         }
     }
+
+    #[test]
+    fn handles_non_ascii_long_no_terminator_ukrainian() {
+        // 300+ char Ukrainian text with no sentence terminator. Forces split_long_chunk
+        // to run with multi-byte Cyrillic throughout. Byte-indexing would corrupt or panic.
+        let ukrainian = "Заявники, які мають подати документи, включаючи Петра Степаненко, Марію Коваленко, Ольгу Шевченко, Василя Грінченко, Софію Федоренко, Ярослава Бондаренко, Галину Сідоренко, Тетяну Литвиненко, та багато інших осіб, мають бути готові до перевірки всіх необхідних матеріалів";
+        
+        let result = split_sentences(ukrainian);
+        
+        // Must split into multiple chunks (no terminator forces split_long_chunk)
+        assert!(
+            result.len() > 1,
+            "Long no-terminator Ukrainian should produce multiple chunks"
+        );
+        
+        // Each chunk must be ≤120 chars
+        for (i, chunk) in result.iter().enumerate() {
+            let char_count = chunk.chars().count();
+            assert!(
+                char_count <= 120,
+                "Chunk {} has {} chars (limit 120)",
+                i,
+                char_count
+            );
+        }
+        
+        // Round-trip: verify no characters are corrupted or lost.
+        // Compare non-whitespace character sequences; split_long_chunk trims whitespace.
+        let original_chars: Vec<char> = ukrainian
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let rejoined_chars: Vec<char> = result
+            .iter()
+            .flat_map(|s| s.chars())
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert_eq!(
+            original_chars, rejoined_chars,
+            "Round-trip should preserve all characters (byte-indexing would corrupt)"
+        );
+    }
 }
