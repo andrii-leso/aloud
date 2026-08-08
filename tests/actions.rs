@@ -2,7 +2,7 @@
 //! the busy guard in `src/app/mod.rs` that serializes access to the shared
 //! `Player`.
 
-use aloud::app::actions::{read_region, speak_selection};
+use aloud::app::actions::{read_region, speak_selection, Outcome};
 use aloud::app::App;
 use aloud::capture::RegionSelector;
 use aloud::ocr::OcrEngine;
@@ -196,6 +196,11 @@ fn cancelled_region_speaks_nothing_and_is_not_an_error() {
 
     assert!(result.is_ok(), "a cancelled capture must not be an error");
     assert_eq!(
+        result.unwrap(),
+        Outcome::Cancelled,
+        "a cancel must be reported as Outcome::Cancelled, not silently as Ok(())"
+    );
+    assert_eq!(
         engine.calls.load(Ordering::SeqCst),
         0,
         "nothing should have been spoken"
@@ -214,6 +219,11 @@ fn empty_ocr_output_speaks_nothing_and_deletes_the_temp_image() {
     let result = read_region(&selector, &EmptyOcr, &player, 1.0);
 
     assert!(result.is_ok());
+    assert_eq!(
+        result.unwrap(),
+        Outcome::Empty,
+        "OCR success with no usable text must be reported as Outcome::Empty"
+    );
     assert_eq!(engine.calls.load(Ordering::SeqCst), 0);
     assert!(
         !image.exists(),
@@ -234,6 +244,11 @@ fn successful_region_speaks_once_with_the_detected_language() {
     let result = read_region(&selector, &ocr, &player, 1.0);
 
     assert!(result.is_ok());
+    assert_eq!(
+        result.unwrap(),
+        Outcome::Spoke,
+        "a successful capture-and-speak must be reported as Outcome::Spoke"
+    );
     assert_eq!(
         engine.calls.load(Ordering::SeqCst),
         1,
