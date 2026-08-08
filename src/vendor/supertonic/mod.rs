@@ -14,7 +14,9 @@
 //
 // MODIFICATIONS by the Aloud project:
 //   - vendored as a library module (upstream ships only a [[bin]] example)
-//   - no functional changes to synthesis
+//   - _infer()'s ONNX Runtime interop adapted to the ort 2.0.0-rc.7 API
+//     (ort::inputs! and try_extract_tensor have a different call shape than
+//     upstream targets); synthesis logic itself unchanged
 //
 // NOTE: the MODEL WEIGHTS are a different licence (BigScience OpenRAIL-M) with
 // use-based restrictions. Do not conflate the two. See CLAUDE.md.
