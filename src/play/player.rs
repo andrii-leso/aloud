@@ -56,8 +56,8 @@ impl Player {
     ///
     /// Not reentrant: intended for a single caller at a time. Concurrent
     /// calls would interleave `sink.append()` calls and race on the shared
-    /// `speaking`/`stop_flag` state; callers (Task 8's CLI) must serialize
-    /// their own calls rather than relying on internal locking here.
+    /// `speaking`/`stop_flag` state; callers must serialize their own calls
+    /// rather than relying on internal locking here.
     pub fn speak(&self, text: &str, lang: &str, speed: f32) -> Result<()> {
         let sentences = split_sentences(text);
         if sentences.is_empty() {

@@ -19,9 +19,6 @@ impl TtsEngine for FakeEngine {
             duration_s: 0.1,
         })
     }
-    fn sample_rate(&self) -> u32 {
-        44100
-    }
 }
 
 /// Fake sink: drains instantly, needs no audio device.
@@ -145,9 +142,6 @@ impl TtsEngine for ProbingEngine {
             sample_rate: 44100,
             duration_s: 0.01,
         })
-    }
-    fn sample_rate(&self) -> u32 {
-        44100
     }
 }
 

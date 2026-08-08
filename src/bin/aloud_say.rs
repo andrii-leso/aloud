@@ -1,6 +1,7 @@
 use aloud::play::{player::Player, sink::RodioSink};
 use aloud::text::{detect::detect_lang, normalize::normalize_ocr};
 use aloud::tts::supertonic_engine::SupertonicEngine;
+use aloud::vendor::supertonic::{is_valid_lang, AVAILABLE_LANGS};
 use anyhow::Result;
 use clap::Parser;
 use std::io::Read;
@@ -47,8 +48,17 @@ fn main() -> Result<()> {
 
     let text = normalize_ocr(&raw);
     if text.is_empty() {
-        eprintln!("nothing to say");
+        eprintln!("[aloud] nothing to say");
         return Ok(());
+    }
+
+    if let Some(tag) = &args.lang {
+        if !is_valid_lang(tag) {
+            anyhow::bail!(
+                "[aloud] --lang \"{tag}\" is not a recognised language tag; supported tags: {}",
+                AVAILABLE_LANGS.join(", ")
+            );
+        }
     }
 
     let lang = args.lang.unwrap_or_else(|| detect_lang(&text));

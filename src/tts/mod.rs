@@ -12,5 +12,4 @@ pub struct Pcm {
 /// licence-clean fallback if OpenRAIL-M ever becomes inconvenient.
 pub trait TtsEngine: Send + Sync {
     fn synthesize(&self, text: &str, lang: &str, speed: f32) -> anyhow::Result<Pcm>;
-    fn sample_rate(&self) -> u32;
 }

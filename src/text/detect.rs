@@ -29,7 +29,6 @@ fn to_supertonic_code(lang: Language) -> &'static str {
         Language::German => "de",
         Language::Ukrainian => "uk",
         Language::Russian => "ru",
-        _ => "na",
     }
 }
 

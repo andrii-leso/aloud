@@ -17,18 +17,17 @@ struct Job {
 
 pub struct SupertonicEngine {
     tx: Mutex<Sender<Job>>,
-    sample_rate: u32,
 }
 
 impl SupertonicEngine {
     /// Loads the model on a dedicated thread and keeps it resident.
     /// The ~1.4s load cost is paid once, here.
     pub fn spawn(voice: &str) -> Result<Self> {
-        let onnx = onnx_dir()
+        let onnx = onnx_dir()?
             .to_str()
             .ok_or_else(|| anyhow!("model path is not valid UTF-8"))?
             .to_owned();
-        let style_path = voice_style_path(voice).to_string_lossy().into_owned();
+        let style_path = voice_style_path(voice)?.to_string_lossy().into_owned();
 
         let (ready_tx, ready_rx) = channel::<Result<u32>>();
         let (job_tx, job_rx) = channel::<Job>();
@@ -75,13 +74,15 @@ impl SupertonicEngine {
                 }
             })?;
 
-        let sample_rate = ready_rx
+        // Blocks until the model has loaded, surfacing a load error here
+        // rather than on the first synthesize() call. The rate itself is
+        // only needed inside the worker thread, to stamp each Pcm.
+        ready_rx
             .recv()
             .map_err(|_| anyhow!("tts thread died during model load"))??;
 
         Ok(Self {
             tx: Mutex::new(job_tx),
-            sample_rate,
         })
     }
 }
@@ -99,10 +100,7 @@ impl TtsEngine for SupertonicEngine {
                 reply,
             })
             .map_err(|_| anyhow!("tts thread is gone"))?;
-        rx.recv().map_err(|_| anyhow!("tts thread dropped the job"))?
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        rx.recv()
+            .map_err(|_| anyhow!("tts thread dropped the job"))?
     }
 }
