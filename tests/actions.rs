@@ -1,0 +1,321 @@
+//! Tests for the two speaking pipelines in `src/app/actions.rs`, and for
+//! the busy guard in `src/app/mod.rs` that serializes access to the shared
+//! `Player`.
+
+use aloud::app::actions::{read_region, speak_selection};
+use aloud::app::App;
+use aloud::capture::RegionSelector;
+use aloud::ocr::OcrEngine;
+use aloud::play::player::Player;
+use aloud::play::sink::AudioSink;
+use aloud::tts::{Pcm, TtsEngine};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+// ---------------------------------------------------------------------
+// Fakes: capture / OCR seams
+// ---------------------------------------------------------------------
+
+/// A selector that reports a deliberate user cancel.
+struct CancelSelector;
+impl RegionSelector for CancelSelector {
+    fn select(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(None)
+    }
+}
+
+/// A selector that reports success, handing back the path to a real temp
+/// file created on disk — real, so deletion can actually be observed.
+struct FileSelector {
+    path: PathBuf,
+}
+impl RegionSelector for FileSelector {
+    fn select(&self) -> anyhow::Result<Option<PathBuf>> {
+        Ok(Some(self.path.clone()))
+    }
+}
+
+/// Creates a uniquely-named temp file standing in for a captured
+/// screenshot, and returns its path.
+fn make_temp_image(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "aloud-actions-test-{name}-{}.png",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"fake png bytes").expect("write temp fixture");
+    path
+}
+
+/// An OCR engine that reports success with the given text, regardless of
+/// what path it is given.
+struct SuccessOcr {
+    text: &'static str,
+}
+impl OcrEngine for SuccessOcr {
+    fn recognise(&self, _image_path: &Path) -> anyhow::Result<String> {
+        Ok(self.text.to_string())
+    }
+}
+
+/// An OCR engine that reports success with nothing but whitespace — the
+/// "found no text" case.
+struct EmptyOcr;
+impl OcrEngine for EmptyOcr {
+    fn recognise(&self, _image_path: &Path) -> anyhow::Result<String> {
+        Ok("   \n\t  ".to_string())
+    }
+}
+
+/// An OCR engine that always fails.
+struct FailingOcr;
+impl OcrEngine for FailingOcr {
+    fn recognise(&self, _image_path: &Path) -> anyhow::Result<String> {
+        Err(anyhow::anyhow!("vision framework exploded"))
+    }
+}
+
+/// An OCR engine that must never be called — used to prove a cancelled
+/// capture short-circuits before OCR runs at all.
+struct UnreachableOcr;
+impl OcrEngine for UnreachableOcr {
+    fn recognise(&self, _image_path: &Path) -> anyhow::Result<String> {
+        panic!("OCR must not run after a cancelled capture");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Fakes: TTS engine / audio sink seams (mirrors tests/player_stop.rs)
+// ---------------------------------------------------------------------
+
+/// Records every `synthesize` call: how many, and the `lang` passed each
+/// time. Instant — no sleep — except where a test explicitly wants a slow
+/// one (see `SlowEngine` below).
+struct RecordingEngine {
+    calls: AtomicUsize,
+    langs: Mutex<Vec<String>>,
+}
+impl RecordingEngine {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            langs: Mutex::new(Vec::new()),
+        }
+    }
+}
+impl TtsEngine for RecordingEngine {
+    fn synthesize(&self, _text: &str, lang: &str, _speed: f32) -> anyhow::Result<Pcm> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.langs.lock().unwrap().push(lang.to_string());
+        Ok(Pcm {
+            samples: vec![0.0; 10],
+            sample_rate: 44100,
+            duration_s: 0.01,
+        })
+    }
+}
+
+/// Like `RecordingEngine`, but each call blocks for `delay` — long enough
+/// for a concurrent second call to have a real chance to land while the
+/// first is still in flight, which is exactly what the busy-guard test
+/// needs to exercise.
+struct SlowEngine {
+    calls: AtomicUsize,
+    delay: Duration,
+}
+impl TtsEngine for SlowEngine {
+    fn synthesize(&self, _text: &str, _lang: &str, _speed: f32) -> anyhow::Result<Pcm> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(self.delay);
+        Ok(Pcm {
+            samples: vec![0.0; 10],
+            sample_rate: 44100,
+            duration_s: 0.01,
+        })
+    }
+}
+
+/// Drains instantly; no audio device needed.
+struct FakeSink;
+impl AudioSink for FakeSink {
+    fn append(&self, _pcm: Pcm) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn queued(&self) -> usize {
+        0
+    }
+    fn stop(&self) {}
+}
+
+const ENGLISH_TEXT: &str = "The applicant must submit the completed form within four weeks.";
+
+// ---------------------------------------------------------------------
+// read_region
+// ---------------------------------------------------------------------
+
+#[test]
+fn cancelled_region_speaks_nothing_and_is_not_an_error() {
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+
+    let result = read_region(&CancelSelector, &UnreachableOcr, &player, 1.0);
+
+    assert!(result.is_ok(), "a cancelled capture must not be an error");
+    assert_eq!(
+        engine.calls.load(Ordering::SeqCst),
+        0,
+        "nothing should have been spoken"
+    );
+}
+
+#[test]
+fn empty_ocr_output_speaks_nothing_and_deletes_the_temp_image() {
+    let image = make_temp_image("empty-ocr");
+    let selector = FileSelector {
+        path: image.clone(),
+    };
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+
+    let result = read_region(&selector, &EmptyOcr, &player, 1.0);
+
+    assert!(result.is_ok());
+    assert_eq!(engine.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        !image.exists(),
+        "the temp image must be deleted even though there was nothing to speak"
+    );
+}
+
+#[test]
+fn successful_region_speaks_once_with_the_detected_language() {
+    let image = make_temp_image("success");
+    let selector = FileSelector {
+        path: image.clone(),
+    };
+    let ocr = SuccessOcr {
+        text: ENGLISH_TEXT,
+    };
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+
+    let result = read_region(&selector, &ocr, &player, 1.0);
+
+    assert!(result.is_ok());
+    assert_eq!(
+        engine.calls.load(Ordering::SeqCst),
+        1,
+        "a single-sentence passage should synthesize exactly once"
+    );
+    assert_eq!(engine.langs.lock().unwrap().as_slice(), ["en"]);
+    assert!(!image.exists(), "the temp image must be deleted on success");
+}
+
+#[test]
+fn temp_image_is_deleted_even_when_ocr_fails() {
+    let image = make_temp_image("ocr-fails");
+    let selector = FileSelector {
+        path: image.clone(),
+    };
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+
+    let result = read_region(&selector, &FailingOcr, &player, 1.0);
+
+    assert!(result.is_err(), "an OCR failure must propagate as an error");
+    assert_eq!(engine.calls.load(Ordering::SeqCst), 0);
+    assert!(
+        !image.exists(),
+        "the temp image must be deleted on the OCR-failure path too"
+    );
+}
+
+// ---------------------------------------------------------------------
+// speak_selection
+// ---------------------------------------------------------------------
+
+#[test]
+fn empty_selection_speaks_nothing() {
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+
+    let result = speak_selection("   \n\t  ", &player, 1.0);
+
+    assert!(result.is_ok());
+    assert_eq!(engine.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn successful_selection_speaks_once_with_the_detected_language() {
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+
+    let result = speak_selection(ENGLISH_TEXT, &player, 1.0);
+
+    assert!(result.is_ok());
+    assert_eq!(engine.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(engine.langs.lock().unwrap().as_slice(), ["en"]);
+}
+
+// ---------------------------------------------------------------------
+// App: the busy guard
+// ---------------------------------------------------------------------
+
+#[test]
+fn busy_guard_prevents_a_second_concurrent_speak() {
+    // The first call ties up the (single, shared) Player for 200ms. A
+    // second call made while that is in flight must be a same-thread
+    // no-op — never a second concurrent `Player::speak`, which the doc
+    // comment on `Player::speak` says would interleave `sink.append()`
+    // calls and race shared state. If the guard were removed (or replaced
+    // with something that doesn't actually block), the second call would
+    // go through and `calls` would read 2 — this test would then fail on
+    // both assertions below.
+    let engine = Arc::new(SlowEngine {
+        calls: AtomicUsize::new(0),
+        delay: Duration::from_millis(200),
+    });
+    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, Arc::new(FakeSink));
+    let app = Arc::new(App::new(player, 1.0));
+
+    let app_bg = Arc::clone(&app);
+    let handle = std::thread::spawn(move || app_bg.speak_selection(ENGLISH_TEXT));
+
+    // Give the background call time to set the busy flag and enter
+    // `engine.synthesize` (which then sleeps for 200ms).
+    std::thread::sleep(Duration::from_millis(50));
+
+    let second_result = app.speak_selection(ENGLISH_TEXT);
+
+    let first_result = handle.join().expect("first call should not panic");
+
+    assert!(
+        !second_result.unwrap(),
+        "a speak already in flight must make the second call a no-op"
+    );
+    assert!(
+        first_result.unwrap(),
+        "the first call should have run to completion"
+    );
+    assert_eq!(
+        engine.calls.load(Ordering::SeqCst),
+        1,
+        "the engine must have been invoked exactly once — a second \
+         concurrent invocation would mean the guard did not hold"
+    );
+}
+
+#[test]
+fn busy_guard_releases_after_completion_so_the_next_call_runs() {
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine.clone(), Arc::new(FakeSink));
+    let app = App::new(player, 1.0);
+
+    let first = app.speak_selection(ENGLISH_TEXT).unwrap();
+    let second = app.speak_selection(ENGLISH_TEXT).unwrap();
+
+    assert!(first, "first call should run");
+    assert!(second, "once the first call has returned, the guard must be released");
+    assert_eq!(engine.calls.load(Ordering::SeqCst), 2);
+}
