@@ -1,24 +1,37 @@
+use aloud::play::sink::AudioSink;
+use aloud::play::player::Player;
 use aloud::text::chunk::split_sentences;
-use aloud::tts::{supertonic_engine::SupertonicEngine, TtsEngine};
+use aloud::tts::{supertonic_engine::SupertonicEngine, TtsEngine, Pcm};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use anyhow::Result;
 
-/// **Test 1: Chunking makes first audio arrive much sooner than the whole paragraph.**
+/// **Test 1: Time-to-first-audio via the production `Player::speak()` path.**
 ///
-/// The spec's load-bearing claim is that per-sentence synthesis keeps first audio
-/// near 1.5s instead of 5.8s for an unchunked paragraph. This test captures that
-/// property as a ratio: first_sentence_ms <= 0.70 * whole_paragraph_ms.
+/// The spec's load-bearing claim is that per-sentence synthesis in `Player::speak()`
+/// keeps first audio near 1.5s instead of 5.8s for an unchunked paragraph. This test
+/// measures time from `speak()` to the first buffer reaching the sink, in the
+/// production code path, then compares to a direct (unchunked) engine synthesis.
 ///
-/// Why 0.70? On an idle machine, the ratio is ~0.33 (first sentence is 1/3 the time
-/// of the whole paragraph). Under load (24 on an 8-core M1), it's ~0.55. If chunking
-/// were removed, the ratio would be 1.0 (first audio waits for everything). 0.70 sits
-/// safely between the worst observed real value (~0.55) and the failure condition
-/// (~1.0), so it discriminates without flaking on a busy machine.
+/// Why a ratio? On an idle machine the ratio is ~0.33 (first audio is 1/3 the
+/// time of the whole paragraph). Under load (load average ~24 on an 8-core M1),
+/// it's ~0.55. If chunking were removed, the ratio would be 1.0 (first audio
+/// waits for the whole text to synthesize). 0.70 sits safely between the worst
+/// observed real value (~0.55) and the failure condition (~1.0).
 ///
-/// Derived numbers printed with --nocapture so we can monitor the ratio over time
-/// without changing the threshold.
+/// The test also asserts that the paragraph produced multiple appends (count > 1),
+/// which alone fails if chunking is removed. This is the cheapest, most direct guard.
+///
+/// **Run in release mode** — debug ONNX inference is ~10x slower and would fail
+/// this test misleadingly.
+///
+/// Derived numbers printed with --nocapture so we can monitor them over time.
 #[test]
 fn first_sentence_is_much_faster_than_whole_paragraph() {
-    let engine = SupertonicEngine::spawn("F5").expect("engine should spawn");
+    let engine = Arc::new(SupertonicEngine::spawn("F5").expect("engine should spawn"));
+
+    // Warm up the engine with one throwaway synthesis.
     let _ = engine.synthesize("Warm up.", "en", 1.0).expect("warmup");
 
     let paragraph = "The applicant must submit the completed form together with proof of \
@@ -26,61 +39,103 @@ fn first_sentence_is_much_faster_than_whole_paragraph() {
                      without processing. If you require an extension, contact the office in \
                      writing before the deadline expires.";
 
-    // Derive the first sentence from the paragraph via the chunker, not a hardcoded string.
-    // This way the test fails if the chunker ever stops splitting the paragraph.
-    let sentences = split_sentences(paragraph);
-    assert!(!sentences.is_empty(), "paragraph should be split into at least one sentence");
-    let first_sentence = &sentences[0];
+    // Time first audio via Player::speak() with a recording sink.
+    let sink = Arc::new(RecordingSink::new());
+    let player = Player::new(engine.clone(), sink.clone());
 
-    // Time the first sentence alone.
     let t0 = Instant::now();
-    let pcm_first = engine
-        .synthesize(first_sentence, "en", 1.0)
-        .expect("first sentence synthesis should succeed");
-    let first_ms = t0.elapsed().as_millis();
+    player
+        .speak(paragraph, "en", 1.0)
+        .expect("speak should succeed");
+    let first_audio_ms = sink
+        .first_append_instant()
+        .map(|instant| (instant - t0).as_millis())
+        .expect("sink should have recorded a first append");
 
+    let append_count = sink.append_count();
     assert!(
-        !pcm_first.samples.is_empty(),
-        "first sentence should produce audio samples"
+        append_count > 1,
+        "paragraph should produce multiple appends (chunking in effect). \
+         Got {append_count} appends. If chunking is removed, this fails."
     );
 
-    // Time the whole paragraph.
+    // Measure unchunked synthesis (direct engine call on whole paragraph).
     let t0 = Instant::now();
-    let pcm_whole = engine
+    let pcm = engine
         .synthesize(paragraph, "en", 1.0)
         .expect("whole paragraph synthesis should succeed");
     let whole_ms = t0.elapsed().as_millis();
 
-    assert!(
-        !pcm_whole.samples.is_empty(),
-        "whole paragraph should produce audio samples"
-    );
+    assert!(!pcm.samples.is_empty());
 
     // Assert the ratio.
-    let ratio = (first_ms as f64) / (whole_ms as f64);
+    let ratio = (first_audio_ms as f64) / (whole_ms as f64);
     println!(
-        "first_sentence_ms={}, whole_paragraph_ms={}, ratio={:.2}",
-        first_ms, whole_ms, ratio
+        "first_audio_ms={}, whole_paragraph_ms={}, ratio={:.2}, append_count={}",
+        first_audio_ms, whole_ms, ratio, append_count
     );
 
     assert!(
-        first_ms <= (whole_ms * 70 / 100),
-        "first sentence should be ≤70% as long as the whole paragraph. \
-         first={first_ms}ms, whole={whole_ms}ms, ratio={ratio:.2}. \
-         If ratio approaches 1.0, chunking may have stopped working."
+        first_audio_ms as u128 <= (whole_ms * 70 / 100),
+        "first audio (via chunked speak) should be ≤70% as long as whole-paragraph synthesis. \
+         first={first_audio_ms}ms, whole={whole_ms}ms, ratio={ratio:.2}. \
+         If ratio approaches 1.0, chunking may have stopped working. \
+         If append_count is 1, chunking is definitely broken."
     );
+}
+
+/// Fake sink that records the instant of the first append and counts total appends.
+struct RecordingSink {
+    first_append: Mutex<Option<Instant>>,
+    count: AtomicUsize,
+}
+
+impl RecordingSink {
+    fn new() -> Self {
+        Self {
+            first_append: Mutex::new(None),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    fn first_append_instant(&self) -> Option<Instant> {
+        *self.first_append.lock().unwrap()
+    }
+
+    fn append_count(&self) -> usize {
+        self.count.load(Ordering::SeqCst)
+    }
+}
+
+impl AudioSink for RecordingSink {
+    fn append(&self, _pcm: Pcm) -> Result<()> {
+        let mut g = self.first_append.lock().unwrap();
+        if g.is_none() {
+            *g = Some(Instant::now());
+        }
+        drop(g); // Release lock before fetch_add.
+        self.count.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn queued(&self) -> usize {
+        0 // Drain instantly: we want synthesis-bound timing, not look-ahead throttle's wait.
+    }
+
+    fn stop(&self) {}
 }
 
 /// **Test 2: Absolute time-to-first-audio budget (ignored by default).**
 ///
 /// The spec's original claim is ≤2.0s warm. However, absolute millisecond budgets
-/// are measurements of the machine state as much as the code: they flake on busy
-/// laptops, in CI containers, or under thermal load. The ratio test above is the
-/// real guard against regression.
+/// measure the machine state as much as the code: they flake on busy laptops, in
+/// CI containers, or under thermal load. The ratio test above is the real guard.
 ///
 /// This test is marked `#[ignore]` and run deliberately with `cargo test --release
 /// -- --ignored` only on idle systems where we want to verify absolute performance.
 /// It will fail on any reasonably loaded machine and that is expected and correct.
+///
+/// **Run in release mode** — debug ONNX inference is ~10x slower.
 const BUDGET_MS: u128 = 2000;
 
 #[test]
