@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the generated bundle Info.plist by the Tauri CLI, which
+       reads `<tauri_dir>/Info.plist` (the directory holding tauri.conf.json,
+       i.e. this crate root) and merges its keys over the generated ones.
+
+       NSMessage is the selector STEM: "readSelection" means macOS invokes
+       -readSelection:userData:error: on the registered services provider.
+       If the two ever disagree the Service silently never fires — no error,
+       no log. Keep this string and the #[unsafe(method(...))] attribute in
+       src/selection/macos.rs in lockstep. -->
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict><key>default</key><string>Read Aloud</string></dict>
+      <key>NSMessage</key>
+      <string>readSelection</string>
+      <key>NSPortName</key>
+      <string>Aloud</string>
+      <key>NSSendTypes</key>
+      <array><string>NSStringPboardType</string></array>
+    </dict>
+  </array>
+</dict>
+</plist>

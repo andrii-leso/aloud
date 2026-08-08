@@ -38,6 +38,23 @@ lingua = { version = "1.8.0", default-features = false, features = ["english", "
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
 
+# Objective-C interop for the macOS Service (NSServices) selection source.
+# Target-gated so a non-macOS build never even resolves them. Feature sets
+# are the minimum the provider needs — AppKit's default feature set is the
+# entire framework.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSPasteboard",
+    "NSResponder",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSString",
+] }
+
 [[bin]]
 name = "aloud-say"
 path = "src/bin/aloud_say.rs"
