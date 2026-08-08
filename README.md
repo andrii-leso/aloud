@@ -81,3 +81,8 @@ hash changes.
   read). Under load — other CPU-heavy work running at the same time —
   this gets noticeably slower; it is not a fixed budget, it is a
   property of how busy the machine is at that moment.
+- **The Supertonic model must already exist at `~/.cache/supertonic3`**
+  (or `$ALOUD_MODEL_DIR`, if set) — there is no first-run download yet.
+- **The hotkey and the Service are silently ignored while a read is
+  already speaking.** A trigger that lands while one is in flight is
+  dropped with no notification, the same as a deliberate cancel.
