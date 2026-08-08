@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess have no
 // stable Rust binding, so they're declared directly rather than pulling in
-// a crate for two functions.
-#[cfg(target_os = "macos")]
+// a crate for two functions. This whole file is macOS-only — gated at the
+// `pub mod macos;` declaration in mod.rs, not here — so no per-item
+// `#[cfg(target_os = "macos")]` is needed inside it.
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;

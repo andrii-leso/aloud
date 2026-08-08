@@ -1,3 +1,11 @@
+// The macOS implementation calls two CoreGraphics FFI functions directly
+// (Screen Recording permission preflight/request) with no cross-platform
+// fallback, so the whole module is gated here rather than gating pieces
+// inside it — this is the seam per Aloud's hard constraint 7 ("everything
+// platform-specific lives behind a seam"; a platform #[cfg] leaking past
+// this point means the seam is in the wrong place). M6 adds a sibling
+// `#[cfg(target_os = "windows")] pub mod windows;`.
+#[cfg(target_os = "macos")]
 pub mod macos;
 
 use anyhow::Result;
