@@ -7,12 +7,6 @@ fn re_hyphen_break() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(\w)-\n(?:[ \t]*)(\w)").unwrap())
 }
 
-fn re_page_number() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    // A line containing only digits, surrounded by blank lines.
-    R.get_or_init(|| Regex::new(r"\n\n[ \t]*\d{1,4}[ \t]*\n\n").unwrap())
-}
-
 fn re_soft_break() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     // A single newline not adjacent to another newline.
@@ -24,19 +18,42 @@ fn re_spaces() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"[ \t]+").unwrap())
 }
 
+/// A block of text is a page number if, once trimmed, it is nothing but
+/// 1-4 digits. Used to drop page-number blocks wherever they land: start,
+/// middle, or end of the document.
+fn is_page_number_block(block: &str) -> bool {
+    let t = block.trim();
+    !t.is_empty() && t.len() <= 4 && t.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Cleans OCR layout artifacts so the text reads as prose.
-/// Order matters: hyphens before soft breaks, page numbers before either
-/// would destroy the blank lines that identify them.
+///
+/// Order matters:
+/// 1. Normalise line endings.
+/// 2. Trim every line individually, *before* any structural pass runs —
+///    OCR routinely leaves trailing spaces on otherwise-blank lines
+///    (e.g. `"\n \n"`), and every later pass depends on a blank line
+///    being pristine `"\n\n"`.
+/// 3. Drop page-number blocks on the now-pristine `"\n\n"` boundaries.
+///    Splitting the whole document into blocks (rather than an anchored
+///    regex requiring `\n\n` on both sides) is what catches a page number
+///    at the very start or end of the text, where one side has no
+///    neighbouring blank line at all.
+/// 4. Hyphen rejoin, before soft breaks would obscure the split word.
+/// 5. Soft-break join to a fixpoint.
+/// 6. Collapse whitespace runs and trim the result.
 pub fn normalize_ocr(input: &str) -> String {
-    let mut s = input.replace("\r\n", "\n");
+    let s = input.replace("\r\n", "\n");
 
-    // Strip page numbers. Run repeatedly to handle consecutive page markers
-    // (overlapping matches that a single replace_all would miss).
-    while re_page_number().is_match(&s) {
-        s = re_page_number().replace_all(&s, "\n\n").into_owned();
-    }
+    let s: String = s.split('\n').map(str::trim).collect::<Vec<_>>().join("\n");
 
-    s = re_hyphen_break().replace_all(&s, "$1$2").into_owned();
+    let s: String = s
+        .split("\n\n")
+        .filter(|block| !is_page_number_block(block))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let mut s = re_hyphen_break().replace_all(&s, "$1$2").into_owned();
 
     // Join soft line breaks. Run repeatedly to handle single-character lines
     // (overlapping matches that a single replace_all would miss).
@@ -97,7 +114,10 @@ mod tests {
     fn does_not_join_a_hyphen_that_ends_a_sentence() {
         // A hyphen followed by a blank line is a paragraph boundary, not a split word.
         let input = "a well-known case-\n\nNext paragraph.";
-        assert_eq!(normalize_ocr(input), "a well-known case-\n\nNext paragraph.");
+        assert_eq!(
+            normalize_ocr(input),
+            "a well-known case-\n\nNext paragraph."
+        );
     }
 
     #[test]
@@ -127,9 +147,36 @@ mod tests {
     #[test]
     fn strips_consecutive_page_numbers() {
         // Regression: consecutive page markers (running footers) need multiple passes
+        assert_eq!(normalize_ocr("End.\n\n7\n\n8\n\nStart."), "End.\n\nStart.");
+    }
+
+    #[test]
+    fn trims_whitespace_on_blank_lines_before_structural_passes() {
+        // Regression: OCR routinely emits trailing spaces on blank lines
+        // ("\n \n" instead of "\n\n"), which used to defeat both paragraph
+        // detection and page-number stripping.
         assert_eq!(
-            normalize_ocr("End.\n\n7\n\n8\n\nStart."),
-            "End.\n\nStart."
+            normalize_ocr("Ende. \n \n7 \n \nAnfang."),
+            "Ende.\n\nAnfang."
+        );
+    }
+
+    #[test]
+    fn strips_a_trailing_page_number_with_no_blank_line_after_it() {
+        // Regression: the old anchored regex required "\n\n" on both sides,
+        // so a footer page number at the very end of the document survived.
+        assert_eq!(
+            normalize_ocr("Der Antrag wurde abgelehnt.\n\n12"),
+            "Der Antrag wurde abgelehnt."
+        );
+    }
+
+    #[test]
+    fn strips_a_leading_page_number_with_no_blank_line_before_it() {
+        // Regression: same defect, mirrored at the start of the document.
+        assert_eq!(
+            normalize_ocr("7\n\nDer Antrag wurde abgelehnt."),
+            "Der Antrag wurde abgelehnt."
         );
     }
 }
