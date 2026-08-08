@@ -28,11 +28,23 @@ fn re_spaces() -> &'static Regex {
 /// Order matters: hyphens before soft breaks, page numbers before either
 /// would destroy the blank lines that identify them.
 pub fn normalize_ocr(input: &str) -> String {
-    let s = input.replace("\r\n", "\n");
-    let s = re_page_number().replace_all(&s, "\n\n").into_owned();
-    let s = re_hyphen_break().replace_all(&s, "$1$2").into_owned();
-    let s = re_soft_break().replace_all(&s, "$1 $2").into_owned();
-    let s = re_spaces().replace_all(&s, " ").into_owned();
+    let mut s = input.replace("\r\n", "\n");
+
+    // Strip page numbers. Run repeatedly to handle consecutive page markers
+    // (overlapping matches that a single replace_all would miss).
+    while re_page_number().is_match(&s) {
+        s = re_page_number().replace_all(&s, "\n\n").into_owned();
+    }
+
+    s = re_hyphen_break().replace_all(&s, "$1$2").into_owned();
+
+    // Join soft line breaks. Run repeatedly to handle single-character lines
+    // (overlapping matches that a single replace_all would miss).
+    while re_soft_break().is_match(&s) {
+        s = re_soft_break().replace_all(&s, "$1 $2").into_owned();
+    }
+
+    s = re_spaces().replace_all(&s, " ").into_owned();
     s.trim().to_owned()
 }
 
@@ -91,5 +103,33 @@ mod tests {
     #[test]
     fn empty_input_is_empty_output() {
         assert_eq!(normalize_ocr(""), "");
+    }
+
+    #[test]
+    fn handles_single_character_lines_in_soft_breaks() {
+        // Regression: single-char lines cause overlapping matches that a single replace_all misses
+        assert_eq!(normalize_ocr("a\nb\nc"), "a b c");
+    }
+
+    #[test]
+    fn handles_multiple_single_character_lines() {
+        // Regression: multiple consecutive single-char lines all need joining
+        assert_eq!(normalize_ocr("x\ny\nz\nw"), "x y z w");
+    }
+
+    #[test]
+    fn preserves_digit_in_middle_of_text() {
+        // Regression: a digit mid-line is NOT a page number (no surrounding blank lines)
+        // Only standalone page numbers surrounded by blank lines get stripped.
+        assert_eq!(normalize_ocr("Total:\n7\nEUR\n42"), "Total: 7 EUR 42");
+    }
+
+    #[test]
+    fn strips_consecutive_page_numbers() {
+        // Regression: consecutive page markers (running footers) need multiple passes
+        assert_eq!(
+            normalize_ocr("End.\n\n7\n\n8\n\nStart."),
+            "End.\n\nStart."
+        );
     }
 }
