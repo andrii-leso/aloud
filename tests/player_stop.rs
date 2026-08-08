@@ -62,7 +62,10 @@ fn stop_prevents_synthesising_the_remaining_sentences() {
         calls < 10,
         "stop should have cut synthesis short, but all {calls} sentences were synthesised"
     );
-    assert!(!player.is_speaking(), "player should not report speaking after stop");
+    assert!(
+        !player.is_speaking(),
+        "player should not report speaking after stop"
+    );
 }
 
 #[test]
@@ -75,7 +78,9 @@ fn speaking_everything_appends_one_buffer_per_sentence() {
     });
     let player = Player::new(engine, Arc::clone(&sink) as Arc<dyn AudioSink>);
 
-    player.speak("One. Two. Three.", "en", 1.0).expect("should speak");
+    player
+        .speak("One. Two. Three.", "en", 1.0)
+        .expect("should speak");
 
     assert_eq!(sink.appended.load(Ordering::SeqCst), 3);
 }
@@ -155,7 +160,10 @@ fn never_synthesises_more_than_one_sentence_ahead_of_playback() {
         synth_duration: Duration::from_millis(5),
         observed_queue_depths: Mutex::new(Vec::new()),
     });
-    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, sink as Arc<dyn AudioSink>);
+    let player = Player::new(
+        Arc::clone(&engine) as Arc<dyn TtsEngine>,
+        sink as Arc<dyn AudioSink>,
+    );
 
     player
         .speak("One. Two. Three. Four. Five.", "en", 1.0)

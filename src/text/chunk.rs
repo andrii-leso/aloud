@@ -1,7 +1,7 @@
 /// Abbreviations that end in a period without ending a sentence.
 const ABBREVIATIONS: &[&str] = &[
-    "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "St.", "Nr.", "z.B.", "u.a.", "ca.",
-    "bzw.", "ggf.", "inkl.", "etc.", "e.g.", "i.e.", "vs.", "Abs.", "Art.",
+    "Dr.", "Mr.", "Mrs.", "Ms.", "Prof.", "St.", "Nr.", "z.B.", "u.a.", "ca.", "bzw.", "ggf.",
+    "inkl.", "etc.", "e.g.", "i.e.", "vs.", "Abs.", "Art.",
 ];
 
 /// Maximum chunk length in characters. Measured on M1 Mac: a 95-character
@@ -198,7 +198,10 @@ mod tests {
 
     #[test]
     fn returns_whole_text_when_it_has_no_terminator() {
-        assert_eq!(split_sentences("no terminator here"), vec!["no terminator here"]);
+        assert_eq!(
+            split_sentences("no terminator here"),
+            vec!["no terminator here"]
+        );
     }
 
     #[test]
@@ -213,7 +216,10 @@ mod tests {
     fn handles_terminator_free_long_run() {
         let long_run = "The quick brown fox jumps over the lazy dog and then continues with a very long sentence that has absolutely no terminators or punctuation marks whatsoever so it should keep going and going and going until we get to five hundred characters or so which is definitely longer than our budget but we need to make sure it splits properly into reasonable chunks without any sentence endings at all just one giant run of words that never stop";
         let result = split_sentences(long_run);
-        assert!(result.len() > 1, "Long terminator-free run should produce multiple chunks");
+        assert!(
+            result.len() > 1,
+            "Long terminator-free run should produce multiple chunks"
+        );
         for chunk in &result {
             assert!(
                 chunk.chars().count() <= 120,
@@ -227,7 +233,10 @@ mod tests {
     fn handles_abbreviation_dense_text() {
         let abbr_dense = "Dr. St. Prof. Mr. Meyer und Dr. Schmidt und Prof. Weber und Mr. Brown besuchen St. Petersburg zusammen mit Dr. Fischer und zusätzlich noch Mr. Wilson.";
         let result = split_sentences(abbr_dense);
-        assert!(result.len() > 1, "Abbreviation-dense text should produce multiple chunks");
+        assert!(
+            result.len() > 1,
+            "Abbreviation-dense text should produce multiple chunks"
+        );
         for chunk in &result {
             assert!(
                 chunk.chars().count() <= 120,
@@ -259,7 +268,11 @@ mod tests {
     fn handles_non_ascii_ukrainian() {
         let ukrainian = "Заявники мають подати документи. Їхні справи буде закрито.";
         let result = split_sentences(ukrainian);
-        assert_eq!(result.len(), 2, "Should produce exactly two chunks from two sentences");
+        assert_eq!(
+            result.len(),
+            2,
+            "Should produce exactly two chunks from two sentences"
+        );
         assert_eq!(result[0], "Заявники мають подати документи.");
         assert_eq!(result[1], "Їхні справи буде закрито.");
         // Verify no panic and correct boundaries.
@@ -272,7 +285,11 @@ mod tests {
     fn handles_non_ascii_german() {
         let german = "Üben Sie regelmäßig mit Ärztinnen und Ärzte. Die Überprüfung erfolgt später.";
         let result = split_sentences(german);
-        assert_eq!(result.len(), 2, "Should produce exactly two chunks from two sentences");
+        assert_eq!(
+            result.len(),
+            2,
+            "Should produce exactly two chunks from two sentences"
+        );
         // Verify no panic and correct boundaries.
         for chunk in &result {
             assert!(chunk.chars().count() > 0, "No empty chunks");
@@ -284,15 +301,15 @@ mod tests {
         // 300+ char Ukrainian text with no sentence terminator. Forces split_long_chunk
         // to run with multi-byte Cyrillic throughout. Byte-indexing would corrupt or panic.
         let ukrainian = "Заявники, які мають подати документи, включаючи Петра Степаненко, Марію Коваленко, Ольгу Шевченко, Василя Грінченко, Софію Федоренко, Ярослава Бондаренко, Галину Сідоренко, Тетяну Литвиненко, та багато інших осіб, мають бути готові до перевірки всіх необхідних матеріалів";
-        
+
         let result = split_sentences(ukrainian);
-        
+
         // Must split into multiple chunks (no terminator forces split_long_chunk)
         assert!(
             result.len() > 1,
             "Long no-terminator Ukrainian should produce multiple chunks"
         );
-        
+
         // Each chunk must be ≤120 chars
         for (i, chunk) in result.iter().enumerate() {
             let char_count = chunk.chars().count();
@@ -303,13 +320,10 @@ mod tests {
                 char_count
             );
         }
-        
+
         // Round-trip: verify no characters are corrupted or lost.
         // Compare non-whitespace character sequences; split_long_chunk trims whitespace.
-        let original_chars: Vec<char> = ukrainian
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
+        let original_chars: Vec<char> = ukrainian.chars().filter(|c| !c.is_whitespace()).collect();
         let rejoined_chars: Vec<char> = result
             .iter()
             .flat_map(|s| s.chars())

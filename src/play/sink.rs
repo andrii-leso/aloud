@@ -50,8 +50,8 @@ struct RodioInner {
 
 impl RodioInner {
     fn open() -> Result<Self> {
-        let mut device =
-            DeviceSinkBuilder::open_default_sink().context("failed to open default audio device")?;
+        let mut device = DeviceSinkBuilder::open_default_sink()
+            .context("failed to open default audio device")?;
         device.log_on_drop(false);
         let player = RodioPlayer::connect_new(device.mixer());
         Ok(Self {

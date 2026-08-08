@@ -1,11 +1,11 @@
-use aloud::play::sink::AudioSink;
 use aloud::play::player::Player;
+use aloud::play::sink::AudioSink;
 use aloud::text::chunk::split_sentences;
-use aloud::tts::{supertonic_engine::SupertonicEngine, TtsEngine, Pcm};
+use aloud::tts::{supertonic_engine::SupertonicEngine, Pcm, TtsEngine};
+use anyhow::Result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use anyhow::Result;
 
 /// **Test 1: Time-to-first-audio via the production `Player::speak()` path.**
 ///
