@@ -136,6 +136,39 @@ impl TtsEngine for SlowEngine {
     }
 }
 
+/// Always fails — for exercising the busy guard's release on an ordinary
+/// `Err` return (as opposed to a panic; see `PanicOnceEngine` below).
+struct FailingEngine {
+    calls: AtomicUsize,
+}
+impl TtsEngine for FailingEngine {
+    fn synthesize(&self, _text: &str, _lang: &str, _speed: f32) -> anyhow::Result<Pcm> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(anyhow::anyhow!("simulated synthesis failure"))
+    }
+}
+
+/// Panics on its first call, then behaves like `RecordingEngine`. Models a
+/// `TtsEngine` (or, more realistically, the chunker feeding it — see
+/// `src/text/chunk.rs`'s manual `Vec<char>` slicing over arbitrary OCR
+/// text) panicking on some adversarial input rather than returning `Err`.
+struct PanicOnceEngine {
+    calls: AtomicUsize,
+}
+impl TtsEngine for PanicOnceEngine {
+    fn synthesize(&self, _text: &str, _lang: &str, _speed: f32) -> anyhow::Result<Pcm> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            panic!("simulated TTS engine panic");
+        }
+        Ok(Pcm {
+            samples: vec![0.0; 10],
+            sample_rate: 44100,
+            duration_s: 0.01,
+        })
+    }
+}
+
 /// Drains instantly; no audio device needed.
 struct FakeSink;
 impl AudioSink for FakeSink {
@@ -318,4 +351,74 @@ fn busy_guard_releases_after_completion_so_the_next_call_runs() {
     assert!(first, "first call should run");
     assert!(second, "once the first call has returned, the guard must be released");
     assert_eq!(engine.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn busy_guard_releases_after_an_ordinary_failure_so_the_next_call_runs() {
+    // The first call fails with an ordinary `Err` (not a panic). If the
+    // guard's release were ever conditioned on success, this would be the
+    // test that catches it: the second call must still be attempted, not
+    // silently skipped as busy.
+    let engine = Arc::new(FailingEngine {
+        calls: AtomicUsize::new(0),
+    });
+    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, Arc::new(FakeSink));
+    let app = App::new(player, 1.0);
+
+    let first = app.speak_selection(ENGLISH_TEXT);
+    assert!(first.is_err(), "the engine's Err must propagate");
+
+    let second = app.speak_selection(ENGLISH_TEXT);
+    assert!(
+        second.is_err(),
+        "the second call must have actually run (and failed the same way) \
+         rather than being skipped as busy, which would read Ok(false)"
+    );
+    assert_eq!(
+        engine.calls.load(Ordering::SeqCst),
+        2,
+        "both calls must have reached the engine"
+    );
+}
+
+#[test]
+fn busy_guard_releases_after_a_panic_so_the_next_call_proceeds() {
+    // Regression test for the defect this fix addresses: a plain
+    // `self.busy.store(false, ...)` placed *after* `f()` returns is
+    // skipped when `f()` unwinds instead of returning. Both real callers
+    // (the hotkey handler and the Service callback) run `App::read_region`
+    // / `App::speak_selection` inside `std::thread::spawn`, so that panic
+    // kills only the worker thread — the process, and the stuck `busy`
+    // flag, survive. Every later hotkey press or Service delivery would
+    // then read `Ok(false)` forever: no error, no log, no audio, until the
+    // app is restarted. The RAII `BusyRelease` in `src/app/mod.rs` fixes
+    // this by releasing in `Drop`, which also runs during an unwind. This
+    // test fails (second call reads busy) if that guard is reverted to a
+    // plain post-call store.
+    let engine = Arc::new(PanicOnceEngine {
+        calls: AtomicUsize::new(0),
+    });
+    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, Arc::new(FakeSink));
+    let app = App::new(player, 1.0);
+
+    let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.speak_selection(ENGLISH_TEXT)
+    }));
+    assert!(
+        first.is_err(),
+        "the engine panic should have unwound through speak_selection"
+    );
+
+    let second = app.speak_selection(ENGLISH_TEXT);
+    assert!(
+        second.unwrap(),
+        "the busy flag must be released even though the first call panicked; \
+         a stuck flag here means the app has silently bricked itself"
+    );
+    assert_eq!(
+        engine.calls.load(Ordering::SeqCst),
+        2,
+        "the second call must have actually reached the engine, not been \
+         skipped as busy"
+    );
 }

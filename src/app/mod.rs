@@ -71,8 +71,26 @@ impl App {
         {
             return Ok(false);
         }
-        let result = f();
-        self.busy.store(false, Ordering::SeqCst);
-        result.map(|()| true)
+        // RAII release rather than a plain `store(false, ...)` after `f()`
+        // returns: `f()` calls into `Player::speak`, which calls into
+        // `TtsEngine::synthesize` over arbitrary OCR/selection text — an
+        // unwinding panic in there must not skip the release. A plain
+        // post-call store would: the unwind jumps straight past it, the
+        // process survives (the panic is inside a spawned thread on every
+        // caller), and every later hotkey press or Service delivery reads
+        // `busy == true` forever and silently no-ops. `_release`'s `Drop`
+        // runs on the ordinary-return path and on an unwind alike.
+        let _release = BusyRelease(&self.busy);
+        f().map(|()| true)
+    }
+}
+
+/// Stores `false` into the wrapped flag when dropped, on any exit —
+/// normal return, `?`, or a panic unwind.
+struct BusyRelease<'a>(&'a AtomicBool);
+
+impl Drop for BusyRelease<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }

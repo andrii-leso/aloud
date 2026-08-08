@@ -19,6 +19,20 @@ use crate::play::player::Player;
 use crate::text::detect::detect_lang;
 use crate::text::normalize::normalize_ocr;
 use anyhow::Result;
+use std::path::Path;
+
+/// Deletes the wrapped path when dropped — on ordinary return, on an
+/// early `?`, and on a panic unwind alike. `ocr.recognise` runs over
+/// whatever text happened to be on the user's screen; it is not a
+/// function to bet "will never panic" on, and a screenshot left behind in
+/// the temp directory after an unwind is a privacy leak, not just a mess.
+struct DeleteOnDrop<'a>(&'a Path);
+
+impl Drop for DeleteOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
+}
 
 /// Captures a screen region, OCRs it, and speaks the result.
 ///
@@ -30,7 +44,7 @@ use anyhow::Result;
 /// `RegionSelector::select` documents the caller as the owner of deleting
 /// the returned temp file (it is a screenshot of the user's screen). This
 /// function deletes it as soon as OCR has had its chance to run against
-/// it — on every path, including when OCR itself fails.
+/// it — on every path, including when OCR itself fails or panics.
 pub fn read_region(
     selector: &dyn RegionSelector,
     ocr: &dyn OcrEngine,
@@ -41,11 +55,12 @@ pub fn read_region(
         return Ok(());
     };
 
-    let recognised = ocr.recognise(&image_path);
-    // Delete before propagating an OCR error: the temp file must go on
-    // every path, error or not.
-    let _ = std::fs::remove_file(&image_path);
-    let text = recognised?;
+    let text = {
+        // Constructed before `recognise` runs, so its `Drop` fires no
+        // matter how that call exits.
+        let _cleanup = DeleteOnDrop(&image_path);
+        ocr.recognise(&image_path)?
+    };
 
     let normalized = normalize_ocr(&text);
     if normalized.is_empty() {
