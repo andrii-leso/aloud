@@ -8,6 +8,14 @@ use std::path::PathBuf;
 /// `Ok(None)` means the user cancelled (pressed Escape) — that is normal,
 /// not an error. The caller should silently do nothing in that case.
 ///
+/// Anything that prevents a capture for a reason *other* than a deliberate
+/// user cancel — most notably missing OS capture permission — is `Err`,
+/// never `Ok(None)`. A permission problem and a cancel can look identical
+/// at the filesystem level (neither leaves a usable file behind), so
+/// implementations must not let the two collapse into the same return
+/// value; the caller needs to be able to tell "nothing to do" apart from
+/// "something needs fixing before this can ever work."
+///
 /// # Ownership of the returned path
 ///
 /// The `PathBuf` in `Ok(Some(path))` points at a freshly-written PNG under

@@ -5,6 +5,16 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess have no
+// stable Rust binding, so they're declared directly rather than pulling in
+// a crate for two functions.
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
 /// Interactive region capture via macOS's built-in `screencapture -i`,
 /// which draws Apple's native crosshair and waits for the user to drag a
 /// rectangle, or press Escape to cancel.
@@ -23,9 +33,17 @@ impl Default for ScreenCapture {
 }
 
 impl RegionSelector for ScreenCapture {
+    /// `Ok(None)` here means only a deliberate user cancel (Escape) — never
+    /// "something went wrong." Anything that stops the capture from
+    /// happening for another reason, most importantly missing Screen
+    /// Recording permission, is `Err`: a missing grant leaves the same
+    /// "no file" signature on disk as a cancel, so it is checked for
+    /// explicitly, up front, rather than left to fall into the cancel path.
     fn select(&self) -> Result<Option<PathBuf>> {
+        ensure_screen_capture_access()?;
+
         let path = unique_capture_path();
-        // -i: interactive crosshair selection: -x: no camera-shutter sound.
+        // -i: interactive crosshair selection; -x: no camera-shutter sound.
         let status = Command::new("screencapture")
             .arg("-i")
             .arg("-x")
@@ -42,6 +60,48 @@ impl RegionSelector for ScreenCapture {
     }
 }
 
+/// Confirms Screen Recording permission is granted before a capture is
+/// attempted.
+///
+/// Without this check, a missing grant and a user cancel are
+/// indistinguishable: both leave no file at the output path, so
+/// `check_capture_result` alone would silently report `Ok(None)` for a
+/// permission problem — the most likely first-run experience for this app
+/// (hotkey pressed, permission never granted, nothing happens, no clue why,
+/// forever). Preflighting here turns that into a loud `Err` instead.
+///
+/// If permission is absent, this also fires `CGRequestScreenCaptureAccess`
+/// once so macOS shows the user the system permission prompt — otherwise a
+/// first-run user would get the error message with no prompt ever having
+/// appeared.
+fn ensure_screen_capture_access() -> Result<()> {
+    let has_access = unsafe { CGPreflightScreenCaptureAccess() };
+    if !has_access {
+        unsafe {
+            CGRequestScreenCaptureAccess();
+        }
+    }
+    access_result(has_access)
+}
+
+/// The decision behind `ensure_screen_capture_access`, factored out as a
+/// pure function of the preflight result so it's testable: on a machine
+/// that already has the grant (this one), `CGPreflightScreenCaptureAccess`
+/// cannot be made to return `false` to exercise the denial branch, but this
+/// function can be called directly with `false`.
+fn access_result(has_access: bool) -> Result<()> {
+    if has_access {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "Aloud needs Screen Recording permission to capture your screen. \
+             Grant it in System Settings → Privacy & Security → Screen Recording, \
+             then quit and reopen Aloud — macOS requires a restart after granting \
+             before the permission takes effect."
+        ))
+    }
+}
+
 /// Decides whether an interactive capture aimed at `path` was completed or
 /// cancelled, by inspecting what (if anything) ended up on disk.
 ///
@@ -49,7 +109,9 @@ impl RegionSelector for ScreenCapture {
 /// at `path` — `screencapture`'s exit code does not reliably distinguish
 /// the two across macOS versions, so file presence/size is the only signal
 /// used here. Split out from `select` so this logic is testable without
-/// driving the actual interactive UI, which cannot be automated.
+/// driving the actual interactive UI, which cannot be automated. Permission
+/// problems are handled earlier, in `ensure_screen_capture_access` — by the
+/// time this runs, "no file" means only "the user pressed Escape."
 fn check_capture_result(path: &Path) -> Result<Option<PathBuf>> {
     match std::fs::metadata(path) {
         Ok(meta) if meta.len() > 0 => Ok(Some(path.to_path_buf())),
@@ -117,5 +179,21 @@ mod tests {
         let a = unique_capture_path();
         let b = unique_capture_path();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn access_present_is_ok() {
+        assert!(access_result(true).is_ok());
+    }
+
+    #[test]
+    fn access_absent_is_a_distinct_err_naming_the_fix() {
+        let err = access_result(false).unwrap_err().to_string();
+        assert!(err.contains("Screen Recording"), "got: {err}");
+        assert!(err.contains("System Settings"), "got: {err}");
+        assert!(
+            err.contains("restart") || err.contains("reopen"),
+            "got: {err}"
+        );
     }
 }
