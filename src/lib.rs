@@ -1,3 +1,4 @@
+pub mod text;
 pub mod tts;
 pub mod vendor;
 
