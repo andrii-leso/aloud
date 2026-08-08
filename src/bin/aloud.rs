@@ -138,15 +138,17 @@ fn main() {
             #[cfg(target_os = "macos")]
             {
                 let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
-                aloud::selection::macos::register_service_provider(Arc::new(move |text: String| {
-                    let rt = Arc::clone(&rt);
-                    std::thread::spawn(move || {
-                        if let Err(e) = rt.app.speak_selection(&text) {
-                            eprintln!("[aloud] speak_selection failed: {e:#}");
-                            notify("Aloud", &e.to_string());
-                        }
-                    });
-                }))?;
+                aloud::selection::macos::register_service_provider(Arc::new(
+                    move |text: String| {
+                        let rt = Arc::clone(&rt);
+                        std::thread::spawn(move || {
+                            if let Err(e) = rt.app.speak_selection(&text) {
+                                eprintln!("[aloud] speak_selection failed: {e:#}");
+                                notify("Aloud", &e.to_string());
+                            }
+                        });
+                    },
+                ))?;
             }
 
             let read_region_item =

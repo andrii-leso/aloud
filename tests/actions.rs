@@ -227,9 +227,7 @@ fn successful_region_speaks_once_with_the_detected_language() {
     let selector = FileSelector {
         path: image.clone(),
     };
-    let ocr = SuccessOcr {
-        text: ENGLISH_TEXT,
-    };
+    let ocr = SuccessOcr { text: ENGLISH_TEXT };
     let engine = Arc::new(RecordingEngine::new());
     let player = Player::new(engine.clone(), Arc::new(FakeSink));
 
@@ -309,7 +307,10 @@ fn busy_guard_prevents_a_second_concurrent_speak() {
         calls: AtomicUsize::new(0),
         delay: Duration::from_millis(200),
     });
-    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, Arc::new(FakeSink));
+    let player = Player::new(
+        Arc::clone(&engine) as Arc<dyn TtsEngine>,
+        Arc::new(FakeSink),
+    );
     let app = Arc::new(App::new(player, 1.0));
 
     let app_bg = Arc::clone(&app);
@@ -349,7 +350,10 @@ fn busy_guard_releases_after_completion_so_the_next_call_runs() {
     let second = app.speak_selection(ENGLISH_TEXT).unwrap();
 
     assert!(first, "first call should run");
-    assert!(second, "once the first call has returned, the guard must be released");
+    assert!(
+        second,
+        "once the first call has returned, the guard must be released"
+    );
     assert_eq!(engine.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -362,7 +366,10 @@ fn busy_guard_releases_after_an_ordinary_failure_so_the_next_call_runs() {
     let engine = Arc::new(FailingEngine {
         calls: AtomicUsize::new(0),
     });
-    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, Arc::new(FakeSink));
+    let player = Player::new(
+        Arc::clone(&engine) as Arc<dyn TtsEngine>,
+        Arc::new(FakeSink),
+    );
     let app = App::new(player, 1.0);
 
     let first = app.speak_selection(ENGLISH_TEXT);
@@ -398,7 +405,10 @@ fn busy_guard_releases_after_a_panic_so_the_next_call_proceeds() {
     let engine = Arc::new(PanicOnceEngine {
         calls: AtomicUsize::new(0),
     });
-    let player = Player::new(Arc::clone(&engine) as Arc<dyn TtsEngine>, Arc::new(FakeSink));
+    let player = Player::new(
+        Arc::clone(&engine) as Arc<dyn TtsEngine>,
+        Arc::new(FakeSink),
+    );
     let app = App::new(player, 1.0);
 
     let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
