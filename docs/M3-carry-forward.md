@@ -52,3 +52,76 @@ The design spec's "~1.5s to first word" comes from a near-idle measurement and h
 ## Release paperwork still owed (before publishing, per CLAUDE.md constraint 3)
 
 Aloud has no LICENSE/NOTICE of its own yet, and the OpenRAIL-M weights statement lives only in `CLAUDE.md`. Shipping the weights requires Attachment A mirrored into the EULA, a copy of the licence, and attribution. Rektor drafts that before money changes hands.
+
+---
+
+# First-use findings, 2026-08-09 (Andrii testing on his own Mac)
+
+Four real bugs, none caught by 80 passing tests. All fixed. The pattern in three of
+the four is the same and worth naming: **I researched crate APIs exhaustively before
+planning M3 and did essentially no research on macOS platform integration.** Do that
+research before M4/M6.
+
+## 1. The Services menu entry never appeared — missing `NSRequiredContext`
+
+`pbs` listed the service, the UTI was correct (`public.utf8-plain-text`),
+`NSServicesStatus` showed it was not disabled, the cache was flushed, the app was in
+/Applications and LaunchServices-registered. macOS still refused to show it.
+
+**Cause:** the `NSServices` dict lacked `NSRequiredContext`. macOS silently omits any
+service without that key — no error, no log, nothing in Services Settings. An empty
+dict means "offer in every context".
+
+I had hypothesised ad-hoc signing was suppressing it. **That was wrong.** Andrii asked
+for research before redesigning; the real cause surfaced in one search.
+
+## 2. Screen Recording grants died on every rebuild — ad-hoc signing
+
+Ad-hoc (`--sign -`) gives no certificate, so the designated requirement falls back to
+the binary's cdhash. Every rebuild = new hash = grant silently invalid, **while System
+Settings still shows the app enabled**. Toggling it does nothing because the entry
+belongs to a binary that no longer exists.
+
+**Fix:** a self-signed code-signing certificate ("Aloud Dev", created once in Keychain
+Access). The DR becomes
+`identifier "com.andriileso.aloud" and certificate leaf = H"e83bf2a9..."` — stable
+across rebuilds. `packaging/make-app.sh` uses it and falls back to ad-hoc with a loud
+warning if absent. The cert does **not** need to be trusted; codesign accepts it.
+**Verified by deliberately rebuilding + reinstalling: the grant survived.**
+
+A stable signing identity is a **development** requirement on macOS, not a distribution
+one. Notarization/Developer ID is the distribution concern. Do not conflate them again.
+
+## 3. `CGPreflightScreenCaptureAccess` false-negatives and blocked working captures
+
+It was used as a gate before capture and returned false while capture would have
+succeeded, so the app reported a permission problem that did not exist.
+
+**Fix:** never gate on it. Run `screencapture` unconditionally; only consult the
+preflight *after* a failed capture, to decide whether the failure was a permission
+problem or a user cancel.
+
+## 4. Ordinary sentences were chopped mid-clause
+
+Reported as an audible pause before the final word of a 125-char sentence. The
+120-char valve was applied to **every** chunk; it cut at char 115.
+
+**Fix:** two budgets. `FIRST_CHUNK_CHARS = 120` (latency-critical, unchanged) and
+`LATER_CHUNK_CHARS = 300` (only to keep one buffer under the 30s stall watchdog).
+Later chunks are synthesised while earlier audio plays, so capping them bought nothing
+and cost natural phrasing.
+
+## Also added
+
+`~/Library/Logs/Aloud/aloud.log` — the app was undebuggable before this, because
+`eprintln!` goes nowhere from a LaunchServices-launched bundle. Every diagnosis above
+came from this file. Keep it.
+
+## Still open
+
+- Region shortcut is not rebindable from the tray (Andrii asked for this).
+- The "Read Selection" tray item is disabled/informational and reads as broken; relabel
+  it now that the Service demonstrably works.
+- Tray icon: square + "A" read well at 22pt; the crosshair and speaker corners do not.
+- The `I'd` → `l'd` OCR misread has a normaliser fix in place but was never reproduced;
+  if it recurs, capture the raw helper output before blaming the fix.
