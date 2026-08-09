@@ -37,19 +37,28 @@ impl RegionSelector for ScreenCapture {
     /// `Ok(None)` here means only a deliberate user cancel (Escape) — never
     /// "something went wrong." Anything that stops the capture from
     /// happening for another reason, most importantly missing Screen
-    /// Recording permission, is `Err`: a missing grant leaves the same
-    /// "no file" signature on disk as a cancel, so it is checked for
-    /// explicitly, up front, rather than left to fall into the cancel path.
+    /// Recording permission, is `Err`.
+    ///
+    /// Order matters here, and it is deliberately *not* "check permission,
+    /// then capture": `CGPreflightScreenCaptureAccess` is known to report a
+    /// false negative even when Screen Recording is genuinely granted (the
+    /// owner saw exactly this — granted in System Settings, app still
+    /// reported it missing) — gating the capture on it blocks a capture
+    /// that would have worked. So `screencapture` is always attempted
+    /// first; the preflight is consulted only afterwards, and only to
+    /// explain an empty result (see `resolve_missing_capture`). A missing
+    /// grant and a user cancel leave the same "no file" signature on disk,
+    /// which is exactly why that second step exists.
     fn select(&self) -> Result<Option<PathBuf>> {
-        ensure_screen_capture_access()?;
-
         let path = unique_capture_path();
+        crate::log_line!("capture: invoking screencapture -i -x {}", path.display());
         // -i: interactive crosshair selection; -x: no camera-shutter sound.
         let status = Command::new("screencapture")
             .arg("-i")
             .arg("-x")
             .arg(&path)
             .status()?;
+        crate::log_line!("capture: screencapture exited with {status}");
 
         // screencapture's exit code for a cancelled (Escape) selection is
         // not reliable across macOS versions, so it is deliberately not
@@ -57,32 +66,42 @@ impl RegionSelector for ScreenCapture {
         // used, via check_capture_result below.
         let _ = status;
 
-        check_capture_result(&path)
+        if let Some(file) = check_capture_result(&path)? {
+            return Ok(Some(file));
+        }
+        resolve_missing_capture()
     }
 }
 
-/// Confirms Screen Recording permission is granted before a capture is
-/// attempted.
+/// Called only when `screencapture` produced no usable file (nothing
+/// written, or a zero-byte file) — i.e. `check_capture_result` already
+/// returned `Ok(None)`. Decides, only now, whether that was a deliberate
+/// user cancel or a missing-permission failure that merely *looks* like
+/// one at the filesystem level, by consulting
+/// `CGPreflightScreenCaptureAccess`.
 ///
-/// Without this check, a missing grant and a user cancel are
-/// indistinguishable: both leave no file at the output path, so
-/// `check_capture_result` alone would silently report `Ok(None)` for a
-/// permission problem — the most likely first-run experience for this app
-/// (hotkey pressed, permission never granted, nothing happens, no clue why,
-/// forever). Preflighting here turns that into a loud `Err` instead.
+/// The preflight is logged either way — granted or not — so a lying
+/// preflight is visible in the log rather than silently swallowed.
 ///
-/// If permission is absent, this also fires `CGRequestScreenCaptureAccess`
-/// once so macOS shows the user the system permission prompt — otherwise a
+/// A `false` reading also fires `CGRequestScreenCaptureAccess` once so
+/// macOS shows the user the system permission prompt — otherwise a
 /// first-run user would get the error message with no prompt ever having
 /// appeared.
-fn ensure_screen_capture_access() -> Result<()> {
+fn resolve_missing_capture() -> Result<Option<PathBuf>> {
     let has_access = unsafe { CGPreflightScreenCaptureAccess() };
-    if !has_access {
-        unsafe {
-            CGRequestScreenCaptureAccess();
-        }
+    crate::log_line!("capture: post-capture preflight has_access={has_access}");
+    if has_access {
+        // The permission is in fact granted, so the empty result can only
+        // have come from the user pressing Escape.
+        return Ok(None);
     }
-    access_result(has_access)
+    unsafe {
+        CGRequestScreenCaptureAccess();
+    }
+    // `has_access` is `false` here, so `access_result` always returns
+    // `Err` — the `.map` never actually runs, it only makes the return
+    // type line up with this function's `Result<Option<PathBuf>>`.
+    access_result(has_access).map(|()| None)
 }
 
 /// The decision behind `ensure_screen_capture_access`, factored out as a
@@ -103,21 +122,34 @@ fn access_result(has_access: bool) -> Result<()> {
     }
 }
 
-/// Decides whether an interactive capture aimed at `path` was completed or
-/// cancelled, by inspecting what (if anything) ended up on disk.
+/// Decides whether an interactive capture aimed at `path` produced a usable
+/// file, by inspecting what (if anything) ended up on disk.
 ///
-/// A cancelled (Escape) selection leaves either nothing, or an empty file,
-/// at `path` — `screencapture`'s exit code does not reliably distinguish
-/// the two across macOS versions, so file presence/size is the only signal
-/// used here. Split out from `select` so this logic is testable without
-/// driving the actual interactive UI, which cannot be automated. Permission
-/// problems are handled earlier, in `ensure_screen_capture_access` — by the
-/// time this runs, "no file" means only "the user pressed Escape."
+/// `screencapture`'s exit code does not reliably distinguish a cancelled
+/// (Escape) selection from a permission failure across macOS versions, so
+/// file presence/size is the only signal used here. Split out from `select`
+/// so this logic is testable without driving the actual interactive UI,
+/// which cannot be automated. This function alone cannot tell a cancel
+/// apart from a permission problem — both leave nothing (or a zero-byte
+/// file) at `path` — so `Ok(None)` here means only "no usable file", and
+/// `select` disambiguates the two afterwards, in `resolve_missing_capture`.
 fn check_capture_result(path: &Path) -> Result<Option<PathBuf>> {
     match std::fs::metadata(path) {
-        Ok(meta) if meta.len() > 0 => Ok(Some(path.to_path_buf())),
-        Ok(_) => Ok(None), // zero-byte file: cancelled
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None), // nothing written: cancelled
+        Ok(meta) if meta.len() > 0 => {
+            crate::log_line!("capture: output file present, {} bytes", meta.len());
+            Ok(Some(path.to_path_buf()))
+        }
+        Ok(meta) => {
+            crate::log_line!(
+                "capture: output file present but empty ({} bytes)",
+                meta.len()
+            );
+            Ok(None)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::log_line!("capture: no output file written");
+            Ok(None)
+        }
         Err(e) => Err(anyhow!(
             "failed to inspect capture output at {}: {e}",
             path.display()
@@ -196,5 +228,65 @@ mod tests {
             err.contains("restart") || err.contains("reopen"),
             "got: {err}"
         );
+    }
+
+    /// Fix 2's core guarantee: a capture that actually produced a file
+    /// must never be overridden by a lying `CGPreflightScreenCaptureAccess`.
+    /// `select()` cannot be driven directly here (it launches the real
+    /// interactive `screencapture` UI), so this exercises the same
+    /// short-circuit at the level `select()` itself relies on — once
+    /// `check_capture_result` reports a usable file, `select()` returns it
+    /// immediately and never reaches `resolve_missing_capture` at all.
+    /// The second half demonstrates *why* that ordering matters: taking
+    /// the path `select()` deliberately avoids here — asking
+    /// `resolve_missing_capture` to judge a `false` preflight on its own —
+    /// produces an `Err`, i.e. exactly the false negative a preflight-first
+    /// gate would have surfaced instead of the successful capture.
+    #[test]
+    fn a_produced_file_wins_even_though_preflight_would_say_false() {
+        let path = unique_capture_path();
+        std::fs::write(&path, [0x89, b'P', b'N', b'G']).unwrap();
+        let file = check_capture_result(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(
+            file,
+            Some(path),
+            "a usable file must short-circuit before any preflight check"
+        );
+        assert!(
+            resolve_missing_capture_result(false).is_err(),
+            "sanity: had select() consulted preflight first instead, a \
+             false reading alone would have been reported as the missing- \
+             permission error, blocking a capture that just succeeded"
+        );
+    }
+
+    #[test]
+    fn resolve_missing_capture_result_true_is_a_cancel() {
+        assert_eq!(resolve_missing_capture_result(true).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_missing_capture_result_false_is_the_permission_err() {
+        let err = resolve_missing_capture_result(false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Screen Recording"), "got: {err}");
+    }
+
+    /// `resolve_missing_capture` itself calls the real
+    /// `CGPreflightScreenCaptureAccess`/`CGRequestScreenCaptureAccess` FFI,
+    /// which cannot be driven to a chosen value in a unit test. This
+    /// mirrors its decision as a function of an already-known preflight
+    /// reading, exactly like `access_result` already does for the error
+    /// message alone — kept test-only rather than added to the real
+    /// function, since the real function's contract is "query the FFI",
+    /// not "take a parameter".
+    fn resolve_missing_capture_result(has_access: bool) -> Result<Option<PathBuf>> {
+        if has_access {
+            return Ok(None);
+        }
+        access_result(has_access).map(|()| None)
     }
 }
