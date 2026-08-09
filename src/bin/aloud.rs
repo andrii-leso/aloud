@@ -257,23 +257,29 @@ fn set_shortcut(
     let old = { state.settings.lock().unwrap().region_shortcut.clone() };
     apply_shortcut(&app, Some(&old), &accel)?;
 
-    let mut s = state.settings.lock().unwrap();
-    s.region_shortcut = accel.clone();
-    s.save(&state.config_dir).map_err(|e| e.to_string())?;
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.region_shortcut = accel.clone();
+        s.save(&state.config_dir).map_err(|e| e.to_string())?;
+    } // guard dropped here — refresh_tray_labels below takes a different
+      // lock (Runtime, not SettingsState), so this was never a deadlock,
+      // but there is no reason to hold the settings lock across an OS
+      // (MenuItem::set_text) call either.
     aloud::log_line!("settings: region shortcut is now {accel}");
 
-    refresh_tray_labels(&app, &s);
+    refresh_tray_labels(&app, &accel);
     Ok(pretty_accelerator(&accel))
 }
 
 /// Keeps the tray's "Read Region" label in sync with the registered
-/// chord, so a rebind made in Settings can never leave the tray showing a
-/// stale accelerator.
-fn refresh_tray_labels(app: &tauri::AppHandle, s: &Settings) {
+/// chord, so neither a rebind made in Settings nor a fallback at launch
+/// (see the `setup()` hotkey-registration block below) can leave the
+/// tray showing a chord that is not actually registered.
+fn refresh_tray_labels(app: &tauri::AppHandle, region_shortcut: &str) {
     let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
     let _ = rt.read_region_item.set_text(format!(
         "Read Region  ({})",
-        pretty_accelerator(&s.region_shortcut)
+        pretty_accelerator(region_shortcut)
     ));
 }
 
@@ -597,6 +603,35 @@ fn main() {
                                     aloud::log_line!(
                                         "hotkey: fell back to {}",
                                         aloud::settings::DEFAULT_SHORTCUT
+                                    );
+                                    // In-memory only — deliberately NOT
+                                    // persisted. The OS now has the
+                                    // default registered, not `wanted`,
+                                    // so the tray label (built above from
+                                    // the pre-fallback `settings`) and
+                                    // the in-state `Settings` both need
+                                    // to agree with reality, the same way
+                                    // `set_shortcut` keeps them in sync
+                                    // for an interactive rebind. But this
+                                    // failure is presumed transient (e.g.
+                                    // another app briefly holding the
+                                    // same chord) rather than a permanent
+                                    // rejection — `set_shortcut` already
+                                    // screens out permanent rejections
+                                    // before anything is ever saved — so
+                                    // `wanted` must survive on disk for a
+                                    // later launch to retry it, not be
+                                    // overwritten by the fallback.
+                                    {
+                                        let settings_state = app.state::<SettingsState>();
+                                        let mut guard =
+                                            settings_state.settings.lock().unwrap();
+                                        guard.region_shortcut =
+                                            aloud::settings::DEFAULT_SHORTCUT.to_string();
+                                    }
+                                    refresh_tray_labels(
+                                        &handle,
+                                        aloud::settings::DEFAULT_SHORTCUT,
                                     );
                                     set_error_status(
                                         &rt,
