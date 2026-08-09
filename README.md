@@ -11,13 +11,17 @@ Two ways to trigger it:
   `Escape` to cancel a selection; nothing happens, nothing is spoken.
 - **Selection Service** — select text in any app, then right-click →
   **Services → Read Aloud** (or use the Services menu under the app's own
-  menu). This route never touches Accessibility or the clipboard — see
-  "Permissions" below for why.
+  menu), or press **Cmd+Shift+A**. This route never touches Accessibility
+  or the clipboard — see "Permissions" below for why.
 
-Assign the Service a keyboard shortcut of your own in **System Settings →
-Keyboard → Keyboard Shortcuts → Services**, under the Text category —
-Aloud only ships the region hotkey built in; the Service shortcut is
-yours to pick.
+Cmd+Shift+A is Aloud's default shortcut for the Service, shipped in
+`Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
+Settings → Keyboard → Keyboard Shortcuts → Services**, under the Text
+category. **Known conflict:** some apps bind Cmd+Shift+A themselves —
+Chrome's tab search and Xcode both do. A Services shortcut takes
+precedence while Aloud is running, so in those apps Cmd+Shift+A triggers
+Read Aloud instead of the app's own binding; rebind one of the two in
+System Settings if that collides with your workflow.
 
 Aloud lives in the menubar only: no Dock icon, no window. Use the tray
 icon to trigger a region read, stop whatever is currently speaking, or
@@ -38,8 +42,10 @@ drive the whole machine and read other applications' UI — far more than
 a reading app needs. Instead, the selection path registers a macOS
 Service (`NSServices`): the system hands Aloud the selected text
 directly when you choose Services → Read Aloud, with no Accessibility
-grant and no clipboard use at all. The cost is that the keyboard shortcut
-for it is assigned in System Settings rather than baked into the app.
+grant and no clipboard use at all. `NSServices` also supports
+`NSKeyEquivalent`, which is how Aloud ships a default shortcut
+(Cmd+Shift+A) for the Service without needing Accessibility at all — see
+above.
 
 If a permission problem (or another failure on the hotkey path — OCR
 finding no text, or the OCR helper itself failing) stops a read from

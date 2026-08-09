@@ -13,7 +13,23 @@
        -readSelection:userData:error: on the registered services provider.
        If the two ever disagree the Service silently never fires — no error,
        no log. Keep this string and the #[unsafe(method(...))] attribute in
-       src/selection/macos.rs in lockstep. -->
+       src/selection/macos.rs in lockstep.
+
+       NSSendTypes MUST be a UTI (public.utf8-plain-text), not the legacy
+       NSStringPboardType: modern macOS filters the Services menu by UTI,
+       so a legacy pasteboard type here means the entry silently never
+       shows up in Services -> Read Aloud, with no error anywhere. Verified
+       on the built bundle 2026-08-09 (pbs -dump_pboard) before this file
+       was fixed to match.
+
+       NSKeyEquivalent's "default" value uses NSMenuItem's modifier-mask
+       shorthand, one character per modifier, prefixed to the key:
+       @ = Command, $ = Shift, ~ = Option, ^ = Control. "$@a" is
+       Cmd+Shift+A. This is the ONLY way to give a Service a default
+       shortcut without Accessibility permission — see README.md
+       "Permissions" for why Accessibility is avoided entirely. The user
+       can override this (or clear it) in System Settings -> Keyboard ->
+       Keyboard Shortcuts -> Services. -->
   <key>NSServices</key>
   <array>
     <dict>
@@ -24,7 +40,9 @@
       <key>NSPortName</key>
       <string>Aloud</string>
       <key>NSSendTypes</key>
-      <array><string>NSStringPboardType</string></array>
+      <array><string>public.utf8-plain-text</string></array>
+      <key>NSKeyEquivalent</key>
+      <dict><key>default</key><string>$@a</string></dict>
     </dict>
   </array>
 </dict>
