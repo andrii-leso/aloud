@@ -10,12 +10,14 @@ use aloud::capture::macos::ScreenCapture;
 use aloud::ocr::macos::VisionOcr;
 use aloud::play::player::Player;
 use aloud::play::sink::RodioSink;
+use aloud::settings::{Settings, VOICES};
+use aloud::shortcut::Chord;
 use aloud::tts::supertonic_engine::SupertonicEngine;
 use std::sync::{Arc, Mutex};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::Manager;
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
 /// Matches `aloud-say`'s default (`src/bin/aloud_say.rs`). A voice picker
@@ -44,6 +46,9 @@ struct Runtime {
     ocr: VisionOcr,
     tray: TrayIcon<tauri::Wry>,
     status_item: MenuItem<tauri::Wry>,
+    /// Handle to the tray's "Read Region" item, so `refresh_tray_labels`
+    /// can update its label after a rebind without rebuilding the menu.
+    read_region_item: MenuItem<tauri::Wry>,
 }
 
 /// The status menu item's text when nothing is wrong.
@@ -131,6 +136,14 @@ fn spawn_read_region(rt: Arc<Runtime>) {
 /// macOS or another app. Carbon registers non-exclusively, so that case
 /// returns Ok here and the hotkey is then silently shadowed. The settings
 /// UI confirms liveness by asking the user to press it.
+///
+/// If registering `new` fails, the rollback to `old` is attempted and its
+/// own outcome is checked, not discarded: if the rollback also fails, the
+/// error says plainly that there is currently no region shortcut at all,
+/// rather than reusing the ordinary "new chord rejected" message — that
+/// message would read as if `old` were still working when it is not.
+/// `set_shortcut` is the first caller where `old` is ever `Some`, so this
+/// path was unreachable before Task 6.
 fn apply_shortcut(app: &tauri::AppHandle, old: Option<&str>, new: &str) -> Result<(), String> {
     use aloud::shortcut::Step;
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -147,10 +160,17 @@ fn apply_shortcut(app: &tauri::AppHandle, old: Option<&str>, new: &str) -> Resul
             }
             Step::Register(s) => {
                 if let Err(e) = gs.register(s.as_str()) {
-                    // Put the old chord back so the app is never left
-                    // with no working hotkey.
                     if let Some(o) = old {
-                        let _ = gs.register(o);
+                        if gs.register(o).is_err() {
+                            // Both the new chord and the rollback failed:
+                            // the app now has NO region hotkey. Say so,
+                            // rather than reporting the ordinary "new
+                            // chord rejected" case.
+                            return Err(format!(
+                                "could not register {s}, and restoring {o} also failed - \
+                                 there is currently no region shortcut. Open Settings and pick one."
+                            ));
+                        }
                     }
                     return Err(format!("could not register {s}: {e}"));
                 }
@@ -182,6 +202,134 @@ fn pretty_accelerator(accel: &str) -> String {
     }
     out.push_str(key);
     out
+}
+
+/// Everything the settings page needs on load.
+#[derive(serde::Serialize)]
+struct SettingsView {
+    region_shortcut: String,
+    region_shortcut_pretty: String,
+    voice: String,
+    speed: f32,
+}
+
+/// `Settings` behind a `Mutex`, plus the config directory it was loaded
+/// from and is saved back to — set up once in `setup` from the one
+/// `Settings::load` call already made there, never loaded a second time.
+struct SettingsState {
+    settings: Mutex<Settings>,
+    config_dir: std::path::PathBuf,
+}
+
+// Every `#[tauri::command]` fn below is intentionally NOT `pub`: the macro
+// makes its hidden `__cmd__*`/`__tauri_command_name_*` helper macros
+// `#[macro_export]` whenever the function is `pub` (so they can be
+// reached through a path, e.g. `commands::get_settings`, from a separate
+// module). `#[macro_export]` hoists a macro to the crate root — but this
+// file already IS the crate root of the `aloud` binary, so a `pub fn`
+// here makes the hoisted copy collide with the original in the same
+// scope (rustc E0255, "defined multiple times" / "reimported here").
+// Plain (crate-private) visibility is correct once `generate_handler!`
+// lives in this same file, and matches every other fn in it.
+#[tauri::command]
+fn get_settings(state: State<'_, SettingsState>) -> SettingsView {
+    let s = state.settings.lock().unwrap();
+    SettingsView {
+        region_shortcut: s.region_shortcut.clone(),
+        region_shortcut_pretty: pretty_accelerator(&s.region_shortcut),
+        voice: s.voice.clone(),
+        speed: s.speed,
+    }
+}
+
+/// Validates the recorded chord, applies it to the OS, then persists.
+///
+/// Order matters: nothing is written to disk until the OS accepted the
+/// chord, so a rejected chord cannot come back after a restart.
+#[tauri::command]
+fn set_shortcut(
+    app: AppHandle,
+    state: State<'_, SettingsState>,
+    chord: Chord,
+) -> Result<String, String> {
+    let accel = chord.to_accelerator().map_err(|e| e.to_string())?;
+
+    let old = { state.settings.lock().unwrap().region_shortcut.clone() };
+    apply_shortcut(&app, Some(&old), &accel)?;
+
+    let mut s = state.settings.lock().unwrap();
+    s.region_shortcut = accel.clone();
+    s.save(&state.config_dir).map_err(|e| e.to_string())?;
+    aloud::log_line!("settings: region shortcut is now {accel}");
+
+    refresh_tray_labels(&app, &s);
+    Ok(pretty_accelerator(&accel))
+}
+
+/// Keeps the tray's "Read Region" label in sync with the registered
+/// chord, so a rebind made in Settings can never leave the tray showing a
+/// stale accelerator.
+fn refresh_tray_labels(app: &tauri::AppHandle, s: &Settings) {
+    let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
+    let _ = rt.read_region_item.set_text(format!(
+        "Read Region  ({})",
+        pretty_accelerator(&s.region_shortcut)
+    ));
+}
+
+#[tauri::command]
+fn set_voice(app: AppHandle, state: State<'_, SettingsState>, voice: String) -> Result<(), String> {
+    if !VOICES.contains(&voice.as_str()) {
+        return Err(format!("unknown voice {voice}"));
+    }
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.voice = voice.clone();
+        s.save(&state.config_dir).map_err(|e| e.to_string())?;
+    }
+    spawn_voice_swap(&app, voice); // Task 9
+    Ok(())
+}
+
+/// Stub — swapping the live TTS engine's voice without a restart is built
+/// in Task 9. This exists now so `set_voice` is a complete, persisting
+/// command rather than missing a step.
+fn spawn_voice_swap(_app: &tauri::AppHandle, voice: String) {
+    aloud::log_line!("set_voice: live voice swap not built yet (Task 9), wanted {voice}");
+}
+
+#[tauri::command]
+fn set_speed(app: AppHandle, state: State<'_, SettingsState>, speed: f32) -> Result<f32, String> {
+    let clamped = Settings::clamp_speed(speed);
+    {
+        let mut s = state.settings.lock().unwrap();
+        s.speed = clamped;
+        s.save(&state.config_dir).map_err(|e| e.to_string())?;
+    }
+    set_live_speed(&app, clamped); // Task 9
+    Ok(clamped)
+}
+
+/// Stub — applying the new speed to the live `Player` without restarting
+/// playback is built in Task 9.
+fn set_live_speed(_app: &tauri::AppHandle, speed: f32) {
+    aloud::log_line!("set_speed: live speed update not built yet (Task 9), wanted {speed}");
+}
+
+/// Deep link to Keyboard Shortcuts → Services, shared by the tray menu's
+/// "Change Selection Shortcut…" item and the `open_services_settings` IPC
+/// command below — one process, one failure path.
+fn open_system_shortcuts_pane() -> std::io::Result<std::process::Child> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.keyboard?Shortcuts")
+        .spawn()
+}
+
+#[tauri::command]
+fn open_services_settings() {
+    if let Err(e) = open_system_shortcuts_pane() {
+        aloud::log_line!("open_services_settings: {e}");
+    }
 }
 
 /// Shows the settings window, creating it on first use.
@@ -277,12 +425,22 @@ fn main() {
                 })
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            set_shortcut,
+            set_voice,
+            set_speed,
+            open_services_settings,
+        ])
         .setup(|app| {
             // Menubar app: no Dock icon, no window.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let settings = aloud::settings::Settings::load(&app.path().app_config_dir()?);
+            // Loaded once, here, and wired into `SettingsState` below —
+            // never loaded a second time.
+            let config_dir = app.path().app_config_dir()?;
+            let settings = Settings::load(&config_dir);
 
             // Paid once, here: the Supertonic model load is ~1.4s and must
             // happen at launch, not on the first hotkey press.
@@ -365,12 +523,12 @@ fn main() {
                         // Deep link to Keyboard Shortcuts → Services. The Service's own
                         // ⌘⇧A already works; this is for users who want to change it or
                         // whose ⌘⇧A collides with Chrome or Xcode.
-                        let target =
-                            "x-apple.systempreferences:com.apple.preference.keyboard?Shortcuts";
-                        if let Err(e) = std::process::Command::new("open").arg(target).spawn() {
+                        if let Err(e) = open_system_shortcuts_pane() {
                             aloud::log_line!(
                                 "services_settings: could not open System Settings: {e}"
                             );
+                            let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
+                            set_error_status(&rt, &format!("Could not open System Settings: {e}"));
                         }
                     } else if event.id() == "settings" {
                         open_settings_window(app);
@@ -388,9 +546,13 @@ fn main() {
                 ocr: VisionOcr::new()?,
                 tray,
                 status_item,
+                read_region_item,
             });
             app.manage(runtime);
-            app.manage(Mutex::new(settings.clone()));
+            app.manage(SettingsState {
+                settings: Mutex::new(settings.clone()),
+                config_dir,
+            });
 
             // The settings window is declared in tauri.conf.json (visible:
             // false), so it already exists at this point — every ordinary
@@ -562,5 +724,119 @@ mod tests {
     #[test]
     fn modifiers_only_with_no_key_renders_just_the_modifiers() {
         assert_eq!(pretty_accelerator("Shift"), "⇧");
+    }
+}
+
+/// IPC-level test for `get_settings`, the one Task 6 command reachable
+/// through `tauri::test`'s `MockRuntime`.
+///
+/// The settings page's JS does not exist yet (Task 7), so there is no
+/// scripted caller to drive through a real webview; and the manual
+/// alternative — opening the tray menu and typing into the settings
+/// window's devtools console — needs a real click on the menu-bar icon,
+/// which this suite (like any non-interactive check) cannot do without
+/// synthetic input. `MockRuntime` is the documented way around that: it
+/// runs the *actual* invoke pipeline (command-name resolution, argument
+/// deserialization, the command body, response serialization)
+/// headlessly.
+///
+/// This uses `mock_context(noop_assets())`, not this crate's real
+/// `tauri.conf.json`/`capabilities/` via `generate_context!()`: that
+/// macro embeds a process-wide symbol (`_EMBED_INFO_PLIST`) that can only
+/// be defined once per binary, and `main()` below already defines it —
+/// calling it again here, even from code `main()` never executes, fails
+/// the whole test binary at link time with "symbol ... already defined"
+/// (confirmed empirically). So this test proves dispatch and
+/// serialization are wired correctly; it does NOT exercise this crate's
+/// actual ACL/capabilities (`capabilities/default.json`) — see the Task
+/// 6 report for how that gap was covered instead.
+///
+/// `set_shortcut`, `set_voice`, and `set_speed` cannot be reached this
+/// way at all: they take `app: AppHandle`, which — unqualified — means
+/// `AppHandle<Wry>` (Tauri's default runtime), matching every other
+/// `AppHandle` in this file (`apply_shortcut`, `open_settings_window`,
+/// `refresh_tray_labels`, ...). `generate_handler!` requires every
+/// registered command to satisfy `CommandArg<'_, R>` for the builder's
+/// own `R`, so pairing them with `mock_builder()`'s `R = MockRuntime`
+/// fails at compile time (confirmed: `error[E0277]: the trait bound
+/// `AppHandle: CommandArg<'_, MockRuntime>` is not satisfied`) —
+/// `get_settings` alone has no such parameter, so it is the only one
+/// that can be registered against `MockRuntime`. Making the other three
+/// generic over `R: tauri::Runtime` would fix this, but would mean
+/// deviating from the concrete-`Wry` style used everywhere else in this
+/// file for a testing convenience the production app never needs; the
+/// Task 6 report explains what verified those three instead (primarily
+/// code-reading, since their validation/ordering is what the CARRIED
+/// FORWARD fix and the disk-write ordering both depend on).
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets};
+    use tauri::webview::InvokeRequest;
+
+    fn invoke_url() -> tauri::Url {
+        // Matches the URL scheme the real webview's IPC bridge uses per
+        // platform (see the `tauri::test` doctests this is copied from).
+        if cfg!(any(windows, target_os = "android")) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        }
+        .parse()
+        .unwrap()
+    }
+
+    fn request(cmd: &str, body: serde_json::Value) -> InvokeRequest {
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: invoke_url(),
+            body: tauri::ipc::InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        }
+    }
+
+    #[test]
+    fn get_settings_returns_the_expected_shape() {
+        // A throwaway config dir under the OS temp dir — never the real
+        // `~/Library/Application Support/com.andriileso.aloud/`, so this
+        // test can never touch the owner's actual `settings.json`.
+        let dir = std::env::temp_dir().join(format!(
+            "aloud-command-tests-get-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![get_settings])
+            .build(mock_context(noop_assets()))
+            .expect("failed to build mock app");
+        app.manage(SettingsState {
+            settings: Mutex::new(Settings::default()),
+            config_dir: dir.clone(),
+        });
+        // The noop context declares no windows (see the doc comment
+        // above for why it's noop rather than this crate's real
+        // context), so build one ad hoc rather than fetching the real
+        // "settings" window by label.
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("MockRuntime can build a webview headlessly");
+
+        let res = get_ipc_response(&webview, request("get_settings", serde_json::json!({})))
+            .expect("get_settings should succeed under the real capabilities ACL");
+        let value: serde_json::Value = res.deserialize().unwrap();
+
+        assert_eq!(value["region_shortcut"], "CmdOrCtrl+Shift+R");
+        assert_eq!(value["region_shortcut_pretty"], "⌘⇧R");
+        assert_eq!(value["voice"], "F5");
+        assert_eq!(value["speed"], 1.0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

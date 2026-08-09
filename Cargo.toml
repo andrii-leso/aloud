@@ -55,6 +55,17 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSString",
 ] }
 
+[dev-dependencies]
+# Adds `tauri::test` (MockRuntime + `get_ipc_response`) on top of the
+# `[dependencies]` tauri above via Cargo feature unification — dev-only,
+# so `cargo build --release` (which never links dev-dependencies) is
+# unaffected. Used by `src/bin/aloud.rs`'s command_tests to invoke
+# `get_settings` through the real invoke pipeline (command-name
+# resolution, argument deserialization, response serialization)
+# headlessly — see that module's doc comment for what it does and does
+# not cover.
+tauri = { version = "2.11.5", features = ["test"] }
+
 [[bin]]
 name = "aloud-say"
 path = "src/bin/aloud_say.rs"
