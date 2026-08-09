@@ -13,7 +13,7 @@ use aloud::play::sink::RodioSink;
 use aloud::tts::supertonic_engine::SupertonicEngine;
 use std::sync::{Arc, Mutex};
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
@@ -166,6 +166,30 @@ fn probe_consumed(_: &tauri::AppHandle, _: &Shortcut) -> bool {
     false
 }
 
+/// `"CmdOrCtrl+Shift+R"` → `"⌘⇧R"`. Display only — the canonical form
+/// stays the plugin's string.
+fn pretty_accelerator(accel: &str) -> String {
+    let mut out = String::new();
+    let mut key = "";
+    for part in accel.split('+') {
+        match part.to_ascii_lowercase().as_str() {
+            "cmdorctrl" | "cmd" | "command" | "super" => out.push('⌘'),
+            "control" | "ctrl" => out.push('⌃'),
+            "alt" | "option" => out.push('⌥'),
+            "shift" => out.push('⇧'),
+            _ => key = part,
+        }
+    }
+    out.push_str(key);
+    out
+}
+
+/// Stub — the real settings window is built in Task 5. This exists now so
+/// the tray item is wired and inert rather than missing entirely.
+fn open_settings_window(_app: &tauri::AppHandle) {
+    aloud::log_line!("settings: window not built yet (Task 5)");
+}
+
 fn main() {
     // Must run before anything else that might log: when the app is
     // launched as a bundle via LaunchServices (the only way it works
@@ -211,23 +235,59 @@ fn main() {
             let core = App::new(player, SPEED);
 
             let status_item = MenuItem::with_id(app, "status", STATUS_READY, false, None::<&str>)?;
-            let read_region_item =
-                MenuItem::with_id(app, "read_region", "Read Region  (⌘⇧R)", true, None::<&str>)?;
+            let separator = PredefinedMenuItem::separator(app)?;
+
+            // Label carries the live chord, so a rebind is reflected here rather
+            // than drifting from a second hard-coded copy of the accelerator.
+            let read_region_item = MenuItem::with_id(
+                app,
+                "read_region",
+                format!(
+                    "Read Region  ({})",
+                    pretty_accelerator(&settings.region_shortcut)
+                ),
+                true,
+                None::<&str>,
+            )?;
+
+            // Informational, and deliberately worded as a statement of fact rather
+            // than an instruction: ⌘⇧A already works, because Info.plist ships it as
+            // the Service's NSKeyEquivalent. The previous label told the user to go
+            // and assign it, which was untrue.
             let read_selection_item = MenuItem::with_id(
                 app,
                 "read_selection_info",
-                "Read Selection — assign in System Settings ▸ Keyboard ▸ Services",
+                "Read Selection  (⌘⇧A, or the Services menu)",
                 false,
                 None::<&str>,
             )?;
+
+            // The selection shortcut is a macOS Service, so it can only be changed
+            // in System Settings. This opens the exact pane instead of describing
+            // where it is.
+            let services_settings_item = MenuItem::with_id(
+                app,
+                "services_settings",
+                "Change Selection Shortcut…",
+                true,
+                None::<&str>,
+            )?;
+            let separator2 = PredefinedMenuItem::separator(app)?;
+
+            let settings_item =
+                MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let stop_item = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Aloud", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
                 &[
                     &status_item,
+                    &separator,
                     &read_region_item,
                     &read_selection_item,
+                    &services_settings_item,
+                    &separator2,
+                    &settings_item,
                     &stop_item,
                     &quit,
                 ],
@@ -243,6 +303,19 @@ fn main() {
                     if event.id() == "read_region" {
                         let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
                         spawn_read_region(rt);
+                    } else if event.id() == "services_settings" {
+                        // Deep link to Keyboard Shortcuts → Services. The Service's own
+                        // ⌘⇧A already works; this is for users who want to change it or
+                        // whose ⌘⇧A collides with Chrome or Xcode.
+                        let target =
+                            "x-apple.systempreferences:com.apple.preference.keyboard?Shortcuts";
+                        if let Err(e) = std::process::Command::new("open").arg(target).spawn() {
+                            aloud::log_line!(
+                                "services_settings: could not open System Settings: {e}"
+                            );
+                        }
+                    } else if event.id() == "settings" {
+                        open_settings_window(app);
                     } else if event.id() == "stop" {
                         app.state::<Arc<Runtime>>().app.stop();
                     } else if event.id() == "quit" {
