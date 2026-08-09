@@ -12,6 +12,7 @@ use aloud::play::player::Player;
 use aloud::play::sink::RodioSink;
 use aloud::tts::supertonic_engine::SupertonicEngine;
 use std::sync::Arc;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
@@ -24,6 +25,17 @@ const VOICE: &str = "F5";
 /// tray concern (see the design doc), not built in M3.
 const SPEED: f32 = 1.0;
 const REGION_SHORTCUT: &str = "CmdOrCtrl+Shift+R";
+
+/// Menubar tray icon, embedded rather than loaded from a path at runtime —
+/// a path-based load can resolve differently once bundled inside the
+/// `.app` (relative to whatever the process's cwd happens to be at
+/// launch) and would fail silently in exactly the place this is hardest
+/// to debug (no window, no attached terminal). 44x44px, drawn as a macOS
+/// *template* image (pure black shapes, alpha-only anti-aliasing, no
+/// colour) — paired with `.icon_as_template(true)` below so macOS
+/// recolours it correctly for both light and dark menu bars. See
+/// `icons/tray.png` and the Swift script that drew it.
+const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray.png");
 
 /// Everything a hotkey handler or tray click needs, built once at startup
 /// and shared for the life of the process.
@@ -168,6 +180,8 @@ fn main() {
             )?;
 
             TrayIconBuilder::new()
+                .icon(Image::from_bytes(TRAY_ICON)?)
+                .icon_as_template(true)
                 .tooltip("Aloud")
                 .menu(&menu)
                 .show_menu_on_left_click(true)
