@@ -5,7 +5,10 @@
 //! is handed text that has already been extracted (the macOS Service from
 //! Task 4, or a future Windows pull-based grabber) and has no acquisition
 //! step at all. Both funnel into the same normalize -> detect -> speak
-//! tail, so a region-captured passage and a selected one sound identical.
+//! tail, so a region-captured passage and a selected one sound identical
+//! — except that `read_region` alone runs `fix_confusions` first, since
+//! only OCR output carries OCR misreads; `speak_selection`'s input is the
+//! user's own exact characters and must never be "corrected".
 //!
 //! Neither function guards against concurrent `Player::speak` calls —
 //! `Player::speak` is documented single-caller/serialized and does not
@@ -14,7 +17,7 @@
 //! the Tauri app.
 
 use crate::capture::RegionSelector;
-use crate::ocr::OcrEngine;
+use crate::ocr::{fix_confusions, OcrEngine};
 use crate::play::player::Player;
 use crate::text::detect::detect_lang;
 use crate::text::normalize::normalize_ocr;
@@ -58,9 +61,14 @@ impl Drop for DeleteOnDrop<'_> {
 ///
 /// Flow: `selector.select()` -> `Ok(None)` means the user pressed Escape,
 /// a deliberate cancel, so this returns `Ok(Outcome::Cancelled)`, not an
-/// error -> `ocr.recognise()` -> `normalize_ocr` -> an empty result means
-/// nothing worth speaking, returns `Ok(Outcome::Empty)` -> `detect_lang`
-/// -> `player.speak()` -> `Ok(Outcome::Spoke)`.
+/// error -> `ocr.recognise()` -> `fix_confusions` -> `normalize_ocr` -> an
+/// empty result means nothing worth speaking, returns `Ok(Outcome::Empty)`
+/// -> `detect_lang` -> `player.speak()` -> `Ok(Outcome::Spoke)`.
+///
+/// `fix_confusions` runs here, between OCR and normalization, and nowhere
+/// else — it corrects OCR misreads (Vision's lowercase `l` for uppercase
+/// `I`), which only make sense to apply to OCR output. `speak_selection`,
+/// below, is handed the user's own exact characters and must never run it.
 ///
 /// `RegionSelector::select` documents the caller as the owner of deleting
 /// the returned temp file (it is a screenshot of the user's screen). This
@@ -83,6 +91,7 @@ pub fn read_region(
         ocr.recognise(&image_path)?
     };
 
+    let text = fix_confusions(&text);
     let normalized = normalize_ocr(&text);
     if normalized.is_empty() {
         return Ok(Outcome::Empty);
