@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Settings window: reads and writes user config over IPC.",
+  "windows": ["settings"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}

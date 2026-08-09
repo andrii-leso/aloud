@@ -5,7 +5,18 @@
   "identifier": "com.andriileso.aloud",
   "build": { "frontendDist": "dist" },
   "app": {
-    "windows": [],
+    "windows": [
+      {
+        "label": "settings",
+        "title": "Aloud Settings",
+        "width": 480,
+        "height": 560,
+        "resizable": false,
+        "visible": false,
+        "decorations": true,
+        "center": true
+      }
+    ],
     "security": { "csp": null },
     "macOSPrivateApi": false
   },

@@ -1,1 +1,45 @@
-<!doctype html><meta charset="utf-8"><title>Aloud</title>
+<!doctype html>
+<meta charset="utf-8" />
+<title>Aloud Settings</title>
+<link rel="stylesheet" href="settings.css" />
+
+<main>
+  <section>
+    <h2>Read Region</h2>
+    <p class="hint">Drag a rectangle anywhere on screen; Aloud reads the text inside it.</p>
+    <button id="record" type="button">⌘⇧R</button>
+    <p class="status" id="chord-status"></p>
+  </section>
+
+  <section>
+    <h2>Read Selection</h2>
+    <p class="hint">
+      Select text in any app, then press <kbd>⌘⇧A</kbd> — or use the app's
+      Services menu.
+    </p>
+    <p class="hint muted">
+      This one belongs to macOS, not to Aloud: it is a system Service, so it
+      can only be changed in System Settings.
+    </p>
+    <button id="open-services" type="button" class="secondary">
+      Open Keyboard Shortcuts…
+    </button>
+  </section>
+
+  <section>
+    <h2>Voice</h2>
+    <div class="row">
+      <label><input type="radio" name="voice" value="F5" /> Female</label>
+      <label><input type="radio" name="voice" value="M5" /> Male</label>
+    </div>
+    <p class="status" id="voice-status"></p>
+  </section>
+
+  <section>
+    <h2>Speed</h2>
+    <input type="range" id="speed" min="0.7" max="2" step="0.05" />
+    <output id="speed-value"></output>
+  </section>
+</main>
+
+<script src="settings.js"></script>

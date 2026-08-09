@@ -184,10 +184,68 @@ fn pretty_accelerator(accel: &str) -> String {
     out
 }
 
-/// Stub — the real settings window is built in Task 5. This exists now so
-/// the tray item is wired and inert rather than missing entirely.
-fn open_settings_window(_app: &tauri::AppHandle) {
-    aloud::log_line!("settings: window not built yet (Task 5)");
+/// Shows the settings window, creating it on first use.
+///
+/// `show()` MUST precede `set_focus()`: tao's set_focus early-returns on
+/// a non-visible window and reports nothing. And the window must keep its
+/// decorations — canBecomeKey is false without a title bar, which would
+/// leave the chord recorder unable to receive a single keystroke.
+///
+/// Because the app runs `ActivationPolicy::Accessory` (no Dock icon),
+/// activation on macOS 14+ is a *request* the system may decline
+/// (tauri#6781 is a live report of exactly this failing for a tray-shown
+/// text input) — accessory apps do not activate implicitly, so without
+/// flipping to `Regular` while the window is open, it can appear behind
+/// the frontmost app. `Accessory` is restored on close so no Dock icon
+/// lingers.
+fn open_settings_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    if let Some(w) = app.get_webview_window("settings") {
+        #[cfg(target_os = "macos")]
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+        let _ = w.show();
+        let _ = w.set_focus();
+        aloud::log_line!("settings: re-showed existing window");
+        return;
+    }
+
+    // Declared in tauri.conf.json with visible:false, so it exists but is
+    // hidden; this branch only runs if it was closed and destroyed.
+    match tauri::WebviewWindowBuilder::new(
+        app,
+        "settings",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Aloud Settings")
+    .inner_size(480.0, 560.0)
+    .resizable(false)
+    .decorations(true)
+    .center()
+    .build()
+    {
+        Ok(w) => {
+            w.on_window_event({
+                let app = app.clone();
+                move |e| {
+                    if matches!(e, tauri::WindowEvent::CloseRequested { .. }) {
+                        // Accessory apps do not activate implicitly; without
+                        // this the window can appear behind the frontmost
+                        // app the next time it's opened. Restored on close
+                        // so no Dock icon lingers.
+                        #[cfg(target_os = "macos")]
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                }
+            });
+            #[cfg(target_os = "macos")]
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            let _ = w.show();
+            let _ = w.set_focus();
+            aloud::log_line!("settings: created window");
+        }
+        Err(e) => aloud::log_line!("settings: could not create window: {e}"),
+    }
 }
 
 fn main() {
@@ -333,6 +391,26 @@ fn main() {
             });
             app.manage(runtime);
             app.manage(Mutex::new(settings.clone()));
+
+            // The settings window is declared in tauri.conf.json (visible:
+            // false), so it already exists at this point — every ordinary
+            // open goes through `open_settings_window`'s re-show branch,
+            // never its window-builder branch. The close handler that
+            // restores ActivationPolicy::Accessory has to be attached here,
+            // to this config-created window, or it would never run in
+            // practice.
+            if let Some(w) = app.get_webview_window("settings") {
+                let app_handle = app.handle().clone();
+                w.on_window_event(move |e| {
+                    if matches!(e, tauri::WindowEvent::CloseRequested { .. }) {
+                        // Accessory apps do not activate implicitly; without
+                        // this the window can appear behind the frontmost
+                        // app the next time it's opened.
+                        #[cfg(target_os = "macos")]
+                        let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                });
+            }
 
             // Registered here rather than via Builder::with_shortcuts because
             // that path propagates a failure out of plugin setup into
