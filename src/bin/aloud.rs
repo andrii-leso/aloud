@@ -9,7 +9,7 @@ use aloud::app::App;
 use aloud::capture::macos::ScreenCapture;
 use aloud::ocr::macos::VisionOcr;
 use aloud::play::player::Player;
-use aloud::play::sink::RodioSink;
+use aloud::play::sink::{AudioSink, RodioSink};
 use aloud::settings::{Settings, VOICES};
 use aloud::shortcut::Chord;
 use aloud::tts::supertonic_engine::SupertonicEngine;
@@ -50,6 +50,10 @@ struct Runtime {
     /// Handle to the tray's "Read Region" item, so `refresh_tray_labels`
     /// can update its label after a rebind without rebuilding the menu.
     read_region_item: MenuItem<tauri::Wry>,
+    /// Retained so a live voice swap (`spawn_voice_swap`) can build a new
+    /// `Player` around the same audio output rather than opening a second
+    /// device — only the engine changes.
+    sink: Arc<dyn AudioSink>,
 }
 
 /// The status menu item's text when nothing is wrong.
@@ -331,15 +335,41 @@ fn set_voice(app: AppHandle, state: State<'_, SettingsState>, voice: String) -> 
         s.voice = voice.clone();
         s.save(&state.config_dir).map_err(|e| e.to_string())?;
     }
-    spawn_voice_swap(&app, voice); // Task 9
+    spawn_voice_swap(&app, voice);
     Ok(())
 }
 
-/// Stub — swapping the live TTS engine's voice without a restart is built
-/// in Task 9. This exists now so `set_voice` is a complete, persisting
-/// command rather than missing a step.
-fn spawn_voice_swap(_app: &tauri::AppHandle, voice: String) {
-    aloud::log_line!("set_voice: live voice swap not built yet (Task 9), wanted {voice}");
+/// Rebuilds the TTS engine on the requested voice and swaps it in.
+///
+/// Off the main thread: `SupertonicEngine::spawn` loads the voice style
+/// and stands up a worker thread, which takes on the order of a second —
+/// running it inline on the IPC call would freeze the settings page's
+/// event loop for that long. The settings page shows "Switching voice…"
+/// until this reports back.
+///
+/// Reuses `rt.sink`: only the engine differs between voices, and the
+/// swap must not open a second audio device (or worse, leave the old one
+/// dangling — `RodioInner::open`'s doc notes playback stops when its
+/// device handle is dropped).
+fn spawn_voice_swap(app: &tauri::AppHandle, voice: String) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
+        match SupertonicEngine::spawn(&voice) {
+            Ok(engine) => {
+                let player = Player::new(Arc::new(engine), Arc::clone(&rt.sink));
+                // Blocks until any speak() currently holding the read
+                // lock finishes — see the RwLock doc comment on
+                // `App::swap_player` (src/app/mod.rs).
+                rt.app.swap_player(player);
+                aloud::log_line!("voice: switched to {voice}");
+            }
+            Err(e) => {
+                aloud::log_line!("voice: could not switch to {voice}: {e:#}");
+                set_error_status(&rt, &format!("Could not load the {voice} voice."));
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -350,14 +380,18 @@ fn set_speed(app: AppHandle, state: State<'_, SettingsState>, speed: f32) -> Res
         s.speed = clamped;
         s.save(&state.config_dir).map_err(|e| e.to_string())?;
     }
-    set_live_speed(&app, clamped); // Task 9
+    set_live_speed(&app, clamped);
     Ok(clamped)
 }
 
-/// Stub — applying the new speed to the live `Player` without restarting
-/// playback is built in Task 9.
-fn set_live_speed(_app: &tauri::AppHandle, speed: f32) {
-    aloud::log_line!("set_speed: live speed update not built yet (Task 9), wanted {speed}");
+/// Applies the new speed to the live `Player` immediately. No engine
+/// rebuild, no restart: `speed` is a plain per-call argument to
+/// `Player::speak` (unlike voice, which is baked into the engine at
+/// construction), so `App` just needs the new value on hand for the next
+/// `speak()` call — see `App::set_speed` (src/app/mod.rs).
+fn set_live_speed(app: &tauri::AppHandle, speed: f32) {
+    app.state::<Arc<Runtime>>().app.set_speed(speed);
+    aloud::log_line!("speed: now {speed}");
 }
 
 /// Arms the liveness probe: the next real hotkey press is consumed as a
@@ -516,8 +550,12 @@ fn main() {
             // happen at launch, not on the first hotkey press.
             let engine = Arc::new(SupertonicEngine::spawn(VOICE)?);
             aloud::log_line!("engine load complete");
-            let sink = Arc::new(RodioSink::new()?);
-            let player = Player::new(engine, sink);
+            // Typed as the trait object up front so the same handle can be
+            // both handed to `Player::new` and retained on `Runtime` — a
+            // live voice swap (`spawn_voice_swap`) reuses it rather than
+            // opening a second audio device.
+            let sink: Arc<dyn AudioSink> = Arc::new(RodioSink::new()?);
+            let player = Player::new(engine, Arc::clone(&sink));
             let core = App::new(player, SPEED);
 
             let status_item = MenuItem::with_id(app, "status", STATUS_READY, false, None::<&str>)?;
@@ -617,6 +655,7 @@ fn main() {
                 tray,
                 status_item,
                 read_region_item,
+                sink,
             });
             app.manage(runtime);
             app.manage(SettingsState {
@@ -709,6 +748,23 @@ fn main() {
                                 }
                                 Err(e2) => {
                                     aloud::log_line!("hotkey: default also failed: {e2}");
+                                    // Neither `wanted` nor the default
+                                    // registered: there is no region
+                                    // shortcut active at all, so the
+                                    // tray's pre-fallback label (built
+                                    // above from the persisted, still-
+                                    // unregistered `wanted`) would
+                                    // otherwise keep telling the user to
+                                    // press a chord that does nothing —
+                                    // the sibling case Task 6 fixed just
+                                    // above, but this branch was missed.
+                                    // An empty accelerator renders as an
+                                    // empty pretty string (see
+                                    // `pretty_accelerator`'s own tests),
+                                    // which is honest here: there is
+                                    // nothing to show. The status/tooltip
+                                    // set below carries the explanation.
+                                    refresh_tray_labels(&handle, "");
                                     set_error_status(&rt, "No region shortcut could be registered.");
                                 }
                             }

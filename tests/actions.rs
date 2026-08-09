@@ -12,7 +12,7 @@ use aloud::tts::{Pcm, TtsEngine};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------
 // Fakes: capture / OCR seams
@@ -182,6 +182,15 @@ impl AudioSink for FakeSink {
 }
 
 const ENGLISH_TEXT: &str = "The applicant must submit the completed form within four weeks.";
+
+/// Builds an `App` around a fresh `RecordingEngine`/`FakeSink` pair at the
+/// given speed. Used by the speed-liveness tests below, which only care
+/// about `App::speed`/`set_speed`, never about what was actually spoken.
+fn build_test_app(speed: f32) -> App {
+    let engine = Arc::new(RecordingEngine::new());
+    let player = Player::new(engine, Arc::new(FakeSink));
+    App::new(player, speed)
+}
 
 // ---------------------------------------------------------------------
 // read_region
@@ -445,5 +454,87 @@ fn busy_guard_releases_after_a_panic_so_the_next_call_proceeds() {
         2,
         "the second call must have actually reached the engine, not been \
          skipped as busy"
+    );
+}
+
+// ---------------------------------------------------------------------
+// App: live speed (Task 9)
+// ---------------------------------------------------------------------
+
+#[test]
+fn speed_changes_take_effect_without_rebuilding_the_app() {
+    let app = build_test_app(1.0);
+    assert_eq!(app.speed(), 1.0);
+    app.set_speed(1.75);
+    assert_eq!(app.speed(), 1.75);
+}
+
+#[test]
+fn speed_is_clamped_at_the_app_boundary_too() {
+    let app = build_test_app(1.0);
+    app.set_speed(99.0);
+    assert_eq!(app.speed(), 2.0);
+}
+
+// ---------------------------------------------------------------------
+// App: live voice swap (Task 9)
+// ---------------------------------------------------------------------
+
+#[test]
+fn swap_player_blocks_until_the_in_flight_utterance_releases_the_read_lock() {
+    // Mirrors busy_guard_prevents_a_second_concurrent_speak's shape: a
+    // slow engine ties up the Player's read lock for 200ms. swap_player,
+    // called from another thread while that read is in flight, must not
+    // return until it releases — proving the RwLock's write lock actually
+    // blocks rather than swapping the Player out from under an in-flight
+    // speak() call and cutting it off. If swap_player were, say, a plain
+    // field assignment behind no lock, this would return almost
+    // instantly and the timing assertion below would fail.
+    let engine = Arc::new(SlowEngine {
+        calls: AtomicUsize::new(0),
+        delay: Duration::from_millis(200),
+    });
+    let player = Player::new(
+        Arc::clone(&engine) as Arc<dyn TtsEngine>,
+        Arc::new(FakeSink),
+    );
+    let app = Arc::new(App::new(player, 1.0));
+
+    let app_bg = Arc::clone(&app);
+    let handle = std::thread::spawn(move || app_bg.speak_selection(ENGLISH_TEXT));
+
+    // Give the background call time to acquire the read lock and enter
+    // engine.synthesize (which then sleeps for 200ms) — same margin as
+    // the busy-guard test above.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let new_engine = Arc::new(RecordingEngine::new());
+    let new_player = Player::new(new_engine.clone(), Arc::new(FakeSink));
+
+    let swap_started = Instant::now();
+    app.swap_player(new_player);
+    let swap_waited = swap_started.elapsed();
+
+    let ran = handle.join().expect("speak_selection should not panic");
+    assert!(
+        ran.unwrap(),
+        "the in-flight utterance should have run to completion, not been \
+         cut off by the voice swap"
+    );
+    assert!(
+        swap_waited >= Duration::from_millis(120),
+        "swap_player returned after {swap_waited:?}, too fast to have \
+         waited for the in-flight read lock (the engine delay was 200ms, \
+         starting ~50ms before the swap) — the write lock should have \
+         blocked until the read released"
+    );
+
+    // The swap actually took effect: a follow-up call reaches the new
+    // engine, not the old (still-slow) one.
+    assert!(app.speak_selection(ENGLISH_TEXT).unwrap());
+    assert_eq!(
+        new_engine.calls.load(Ordering::SeqCst),
+        1,
+        "the follow-up call should have reached the swapped-in engine"
     );
 }
