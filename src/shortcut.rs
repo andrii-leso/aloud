@@ -152,6 +152,29 @@ impl Chord {
     }
 }
 
+/// One OS-level operation. Extracted so the ordering decision is
+/// testable without a live registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Step {
+    Unregister(String),
+    Register(String),
+}
+
+/// The steps needed to move from `old` to `new`. Rebinding to the chord
+/// already in force is deliberately empty: unregister-then-register of
+/// the same accelerator would leave a window where the hotkey is dead,
+/// and buys nothing.
+pub fn plan_apply(old: Option<&str>, new: &str) -> Vec<Step> {
+    match old {
+        Some(o) if o == new => Vec::new(),
+        Some(o) => vec![
+            Step::Unregister(o.to_string()),
+            Step::Register(new.to_string()),
+        ],
+        None => vec![Step::Register(new.to_string())],
+    }
+}
+
 /// `KeyboardEvent.code` → the plugin's key token. `KeyR` → `R`,
 /// `Digit5` → `5`; everything else (`ArrowUp`, `Backquote`, `F7`,
 /// `Space`, `Enter`) is already the plugin's own name.

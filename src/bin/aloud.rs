@@ -11,12 +11,12 @@ use aloud::ocr::macos::VisionOcr;
 use aloud::play::player::Player;
 use aloud::play::sink::RodioSink;
 use aloud::tts::supertonic_engine::SupertonicEngine;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::Manager;
-use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
 /// Matches `aloud-say`'s default (`src/bin/aloud_say.rs`). A voice picker
 /// is a Settings-window concern, not built in M3.
@@ -24,7 +24,6 @@ const VOICE: &str = "F5";
 /// Matches `aloud-say`'s default. A speed control is a Settings-window /
 /// tray concern (see the design doc), not built in M3.
 const SPEED: f32 = 1.0;
-const REGION_SHORTCUT: &str = "CmdOrCtrl+Shift+R";
 
 /// Menubar tray icon, embedded rather than loaded from a path at runtime —
 /// a path-based load can resolve differently once bundled inside the
@@ -125,6 +124,48 @@ fn spawn_read_region(rt: Arc<Runtime>) {
     });
 }
 
+/// Moves the region hotkey from `old` to `new`, rolling back to `old` if
+/// the new one will not register.
+///
+/// Note what this canNOT do: report that a chord is already owned by
+/// macOS or another app. Carbon registers non-exclusively, so that case
+/// returns Ok here and the hotkey is then silently shadowed. The settings
+/// UI confirms liveness by asking the user to press it.
+fn apply_shortcut(app: &tauri::AppHandle, old: Option<&str>, new: &str) -> Result<(), String> {
+    use aloud::shortcut::Step;
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let gs = app.global_shortcut();
+    for step in aloud::shortcut::plan_apply(old, new) {
+        match step {
+            Step::Unregister(s) => {
+                // Returns Ok for a chord that was never registered, so a
+                // failure here is a real one.
+                if let Err(e) = gs.unregister(s.as_str()) {
+                    return Err(format!("could not release {s}: {e}"));
+                }
+            }
+            Step::Register(s) => {
+                if let Err(e) = gs.register(s.as_str()) {
+                    // Put the old chord back so the app is never left
+                    // with no working hotkey.
+                    if let Some(o) = old {
+                        let _ = gs.register(o);
+                    }
+                    return Err(format!("could not register {s}: {e}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stub — a liveness probe is added in Task 8. For now no shortcut press
+/// is ever a probe, so every press runs the normal read-region flow.
+fn probe_consumed(_: &tauri::AppHandle, _: &Shortcut) -> bool {
+    false
+}
+
 fn main() {
     // Must run before anything else that might log: when the app is
     // launched as a bundle via LaunchServices (the only way it works
@@ -137,15 +178,18 @@ fn main() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([REGION_SHORTCUT])
-                .expect("REGION_SHORTCUT is a valid shortcut string")
-                .with_handler(|app, _shortcut, event| {
+                .with_handler(move |app, shortcut, event| {
                     // ShortcutEvent fires on both press and release; without
                     // this filter every hotkey press runs the flow twice.
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
-                    aloud::log_line!("hotkey: region shortcut pressed");
+                    aloud::log_line!("hotkey: {shortcut:?} pressed");
+                    // A liveness probe swallows the press instead of reading
+                    // a region.
+                    if probe_consumed(app, shortcut) {
+                        return;
+                    }
                     let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
                     spawn_read_region(rt);
                 })
@@ -155,6 +199,8 @@ fn main() {
             // Menubar app: no Dock icon, no window.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            let settings = aloud::settings::Settings::load(&app.path().app_config_dir()?);
 
             // Paid once, here: the Supertonic model load is ~1.4s and must
             // happen at launch, not on the first hotkey press.
@@ -213,6 +259,48 @@ fn main() {
                 status_item,
             });
             app.manage(runtime);
+            app.manage(Mutex::new(settings.clone()));
+
+            // Registered here rather than via Builder::with_shortcuts because
+            // that path propagates a failure out of plugin setup into
+            // .run(), which panics to a stderr nothing reads from a bundled
+            // launch. Once the chord is user-supplied, that would turn a bad
+            // save into an app that silently refuses to start. Here a
+            // failure is logged, surfaced in the tray, and recovered from by
+            // falling back to the default.
+            {
+                let handle = app.handle().clone();
+                let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
+                let wanted = settings.region_shortcut.clone();
+                match apply_shortcut(&handle, None, &wanted) {
+                    Ok(()) => {
+                        aloud::log_line!("hotkey: registered {wanted}");
+                    }
+                    Err(e) => {
+                        aloud::log_line!("hotkey: failed to register {wanted}: {e}");
+                        if wanted != aloud::settings::DEFAULT_SHORTCUT {
+                            match apply_shortcut(&handle, None, aloud::settings::DEFAULT_SHORTCUT) {
+                                Ok(()) => {
+                                    aloud::log_line!(
+                                        "hotkey: fell back to {}",
+                                        aloud::settings::DEFAULT_SHORTCUT
+                                    );
+                                    set_error_status(
+                                        &rt,
+                                        "Your shortcut could not be registered; the default is back in use.",
+                                    );
+                                }
+                                Err(e2) => {
+                                    aloud::log_line!("hotkey: default also failed: {e2}");
+                                    set_error_status(&rt, "No region shortcut could be registered.");
+                                }
+                            }
+                        } else {
+                            set_error_status(&rt, "The region shortcut could not be registered.");
+                        }
+                    }
+                }
+            }
 
             // The selection path is a macOS Service, not a hotkey we own:
             // the system hands us the user's selected text via
