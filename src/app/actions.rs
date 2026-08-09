@@ -81,8 +81,10 @@ pub fn read_region(
     speed: f32,
 ) -> Result<Outcome> {
     let Some(image_path) = selector.select()? else {
+        crate::log_line!("region flow: cancelled (Escape)");
         return Ok(Outcome::Cancelled);
     };
+    crate::log_line!("region flow: captured to {}", image_path.display());
 
     let text = {
         // Constructed before `recognise` runs, so its `Drop` fires no
@@ -94,11 +96,18 @@ pub fn read_region(
     let text = fix_confusions(&text);
     let normalized = normalize_ocr(&text);
     if normalized.is_empty() {
+        crate::log_line!("region flow: normalized text is empty, nothing to speak");
         return Ok(Outcome::Empty);
     }
 
     let lang = detect_lang(&normalized);
+    crate::log_line!(
+        "region flow: detected language={lang}, normalized length={} chars",
+        normalized.chars().count()
+    );
+    crate::log_line!("region flow: speak started");
     player.speak(&normalized, &lang, speed)?;
+    crate::log_line!("region flow: speak finished");
     Ok(Outcome::Spoke)
 }
 
@@ -110,9 +119,17 @@ pub fn read_region(
 pub fn speak_selection(text: &str, player: &Player, speed: f32) -> Result<()> {
     let normalized = normalize_ocr(text);
     if normalized.is_empty() {
+        crate::log_line!("selection flow: normalized text is empty, nothing to speak");
         return Ok(());
     }
 
     let lang = detect_lang(&normalized);
-    player.speak(&normalized, &lang, speed)
+    crate::log_line!(
+        "selection flow: detected language={lang}, normalized length={} chars",
+        normalized.chars().count()
+    );
+    crate::log_line!("selection flow: speak started");
+    player.speak(&normalized, &lang, speed)?;
+    crate::log_line!("selection flow: speak finished");
+    Ok(())
 }

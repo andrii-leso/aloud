@@ -78,10 +78,16 @@ define_class!(
             let string_type = unsafe { NSPasteboardTypeString };
             let Some(text) = pboard.stringForType(string_type) else {
                 // Nothing on the pasteboard we can read as text.
+                crate::log_line!("selection: Service callback fired, pasteboard had no text");
                 return;
             };
             let text = text.to_string();
+            crate::log_line!(
+                "selection: Service callback fired, pasteboard text length={} chars",
+                text.chars().count()
+            );
             if selection_worth_speaking(Some(&text)).is_none() {
+                crate::log_line!("selection: text not worth speaking, ignoring");
                 return;
             }
 

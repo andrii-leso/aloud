@@ -102,20 +102,38 @@ fn set_error_status(rt: &Runtime, message: &str) {
 /// identical to "the hotkey did nothing" otherwise.
 fn spawn_read_region(rt: Arc<Runtime>) {
     std::thread::spawn(move || match rt.app.read_region(&rt.selector, &rt.ocr) {
-        Ok(None) | Ok(Some(Outcome::Cancelled)) => {}
-        Ok(Some(Outcome::Spoke)) => reset_status(&rt),
+        Ok(None) => {
+            aloud::log_line!("read_region: skipped, a read is already in flight");
+        }
+        Ok(Some(Outcome::Cancelled)) => {
+            aloud::log_line!("read_region: cancelled by the user (Escape)");
+        }
+        Ok(Some(Outcome::Spoke)) => {
+            aloud::log_line!("read_region: completed, spoke");
+            reset_status(&rt);
+        }
         Ok(Some(Outcome::Empty)) => {
             eprintln!("[aloud] read_region: no text found in the captured region");
+            aloud::log_line!("read_region: completed, no text found in the captured region");
             set_error_status(&rt, "No text found in that region.");
         }
         Err(e) => {
             eprintln!("[aloud] read_region failed: {e:#}");
+            aloud::log_line!("read_region: error: {e:#}");
             set_error_status(&rt, &e.to_string());
         }
     });
 }
 
 fn main() {
+    // Must run before anything else that might log: when the app is
+    // launched as a bundle via LaunchServices (the only way it works
+    // correctly — see the Service registration below), stderr is not
+    // attached to anything retrievable, so this file is the only place a
+    // failure is diagnosable from. See `src/log.rs`.
+    aloud::log::init();
+    aloud::log_line!("app start");
+
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -127,6 +145,7 @@ fn main() {
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
+                    aloud::log_line!("hotkey: region shortcut pressed");
                     let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
                     spawn_read_region(rt);
                 })
@@ -140,6 +159,7 @@ fn main() {
             // Paid once, here: the Supertonic model load is ~1.4s and must
             // happen at launch, not on the first hotkey press.
             let engine = Arc::new(SupertonicEngine::spawn(VOICE)?);
+            aloud::log_line!("engine load complete");
             let sink = Arc::new(RodioSink::new()?);
             let player = Player::new(engine, sink);
             let core = App::new(player, SPEED);
@@ -213,10 +233,18 @@ fn main() {
                     move |text: String| {
                         let rt = Arc::clone(&rt);
                         std::thread::spawn(move || match rt.app.speak_selection(&text) {
-                            Ok(true) => reset_status(&rt),
-                            Ok(false) => {}
+                            Ok(true) => {
+                                aloud::log_line!("speak_selection: completed, spoke");
+                                reset_status(&rt);
+                            }
+                            Ok(false) => {
+                                aloud::log_line!(
+                                    "speak_selection: skipped, a read is already in flight"
+                                );
+                            }
                             Err(e) => {
                                 eprintln!("[aloud] speak_selection failed: {e:#}");
+                                aloud::log_line!("speak_selection: error: {e:#}");
                                 set_error_status(&rt, &e.to_string());
                             }
                         });

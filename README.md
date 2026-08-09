@@ -77,6 +77,18 @@ gives the app a stable identity, so the Screen Recording grant persists
 across rebuilds instead of macOS asking again every time the binary's
 hash changes.
 
+## Debugging
+
+Aloud is a menubar app with no window and no attached terminal once
+launched via LaunchServices (double-click or `open`), so `eprintln!`
+output goes nowhere retrievable. Everything worth diagnosing — app
+start, engine load, hotkey presses, each stage of a region capture
+(preflight, `screencapture` invocation and exit status, output-file
+presence/size, OCR text length, detected language, speak start/finish),
+the Service callback firing, and every error — is also logged to
+`~/Library/Logs/Aloud/aloud.log` (append-only, truncated at startup past
+1 MB). `tail -f` it while reproducing an issue.
+
 ## Known limits
 
 - **macOS only.** Windows support is planned for a later milestone;

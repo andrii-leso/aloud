@@ -50,6 +50,11 @@ impl OcrEngine for VisionOcr {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            crate::log_line!(
+                "ocr: aloud-ocr exited with {}: {}",
+                output.status,
+                stderr.trim()
+            );
             return Err(anyhow!(
                 "aloud-ocr exited with {}: {}",
                 output.status,
@@ -57,6 +62,8 @@ impl OcrEngine for VisionOcr {
             ));
         }
 
-        Ok(String::from_utf8(output.stdout)?.trim_end().to_string())
+        let text = String::from_utf8(output.stdout)?.trim_end().to_string();
+        crate::log_line!("ocr: recognised text length={} chars", text.chars().count());
+        Ok(text)
     }
 }
