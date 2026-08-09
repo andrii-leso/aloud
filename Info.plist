@@ -35,6 +35,13 @@
     <dict>
       <key>NSMenuItem</key>
       <dict><key>default</key><string>Read Aloud</string></dict>
+      <!-- NSRequiredContext must be PRESENT even when empty. Without it macOS
+           silently omits the service from the Services menu — no error, no log.
+           An empty dict means "offer this service in every context". -->
+      <key>NSRequiredContext</key>
+      <dict/>
+      <key>NSReturnTypes</key>
+      <array/>
       <key>NSMessage</key>
       <string>readSelection</string>
       <key>NSPortName</key>
