@@ -14,7 +14,8 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 |---|---|
 | Anything at all | [`../../../docs/superpowers/specs/2026-08-08-aloud-tts-reader-design.md`](../../../docs/superpowers/specs/2026-08-08-aloud-tts-reader-design.md) — the design. Seams, platform matrix, measured performance budget, licence obligations. |
 | TTS / voices / engine work | [`../../../docs/capabilities.md`](../../../docs/capabilities.md) §1 (engines, measured numbers) and its licence section. |
-| Windows-side work | [`../../../BKM/PC-Queue/README.md`](../../../BKM/PC-Queue/README.md) — the Windows half is built on the PC, brief-driven. |
+| macOS platform work — tray, settings window, launch-at-login, TCC/signing, packaging | [`docs/M4-platform-research-macos.md`](docs/M4-platform-research-macos.md) — verified/likely/unverified findings and a traps table, built from what M3's first real use got wrong. |
+| Windows-side work / M6 | [`docs/M6-platform-research-windows.md`](docs/M6-platform-research-windows.md) — the seven constraint conflicts against Aloud's hard constraints, the manual-test checklist to run on the PC, and [`../../../BKM/PC-Queue/README.md`](../../../BKM/PC-Queue/README.md) for how the PC half actually gets built (brief-driven). |
 | Building, running, or verifying the app; permissions | [`README.md`](README.md) — the dev doc: what it does, how to build (`packaging/make-app.sh`), permissions, known limits. |
 | Anything touching the EULA or selling | Dispatch Rektor. Do not draft licence terms unaided. |
 
@@ -31,12 +32,15 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 7. **Everything platform- or engine-specific lives behind a seam** (`RegionSelector`, `OcrEngine`, `SelectionGrabber`, `TtsEngine`). If a platform `#[cfg]` is leaking into pipeline logic, the seam is in the wrong place.
 8. **Check `df -h /` before installing toolchains or models, and again after any build.** The M1 Air is small and has run critically low before — it hit 2.3 GB free during the M3 Tauri build.
 9. **Build and test in `--release`, not debug.** `target/debug` costs ~3 GB on top of release's ~2.2 GB and offers nothing here: ONNX inference in a debug build is several times slower, so the timing-sensitive tests are misleading there anyway. A stray `cargo test` (which defaults to debug) recreates the whole 3 GB tree. If you find `target/debug` present and disk is tight, deleting it is safe.
+10. **A new file under `dist/` needs a clean rebuild to actually take effect.** `dist/` is embedded at compile time by `tauri::generate_context!()`, but `cargo` does not watch it for `rerun-if-changed`, and `generate_context!()` cannot track a file that didn't exist at the previous compile. Adding a new file under `dist/` and rebuilding normally therefore silently embeds a **stale** binary — no error, no warning. If you touch `dist/`, run `cargo clean -p aloud --release` before the next build. This cost real time during M4.
 
 ---
 
 ## Stack
 
 - **Tauri 2** (menubar shell, global-shortcut plugin, tray), Rust core, web UI. Packaging on macOS is **hand-assembled**, not the Tauri CLI bundler: `cargo install tauri-cli` drove this M1 Air to 2.0 GB free, so `packaging/make-app.sh` builds `target/Aloud.app` directly (see `README.md`). Do not reach for `cargo tauri build` here. Windows packaging (M6) is undecided — revisit then, it does not inherit this constraint.
+- **Settings window (`dist/`):** hand-written HTML/CSS/JS, no bundler, no `package.json`, no build step — edit the files directly and rebuild the Rust binary (see Hard constraint 10, the `dist/` clean-rebuild trap).
+- **Do not add `tauri-plugin-autostart`.** Read from its source (M4 research): on macOS it offers only LaunchAgent and AppleScript modes, and its default LaunchAgent mode writes `ProgramArguments` pointing at `Contents/MacOS/aloud` — the inner binary — which bypasses LaunchServices, the mechanism that registers the `NSServices` provider. Adopting it as-is would silently kill "Read Aloud". Launch-at-login is not yet built; see `docs/HANDOFF.md`.
 - **TTS:** Supertonic 3 via its first-party Rust SDK over ONNX Runtime. Defaults **F5** (female) and **M5** (male). 31 languages; `lingua-rs` picks the tag. Kokoro stays wired as the licence-clean fallback.
 - **OCR:** bundled Swift helper → Vision (macOS); `Windows.Media.Ocr` via the `windows` crate (Windows). Never Tesseract.
 - **Model:** 385 MB, downloaded on first run, not shipped in the installer. All ten voice styles together are under 3 MB — ship them all.
@@ -52,9 +56,10 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 | `src/bin/aloud.rs` | The Tauri menubar app |
 | `src/bin/aloud_say.rs` | The CLI |
 | `src/vendor/` | Vendored MIT Supertonic engine — never edit |
-| `dist/` | Placeholder frontend Tauri requires; never displayed in M3 |
+| `dist/` | The settings window: hand-written HTML/CSS/JS, no bundler, no `package.json`. Embedded at compile time — see Hard constraint 10 for the clean-rebuild trap this creates |
+| `capabilities/` | Tauri capability grants — the IPC permissions the settings window's JS is allowed to call. The `global-shortcut` plugin's own defaults are empty ("shortcuts can be inherently dangerous"), so this file is what unlocks the settings window's `register`/`unregister` calls |
 | `Info.plist` | NSServices declaration — the single source of truth for it, merged into `target/Aloud.app`'s bundle Info.plist by `packaging/make-app.sh` (PlistBuddy `Merge`), not by Tauri |
-| `packaging/make-app.sh` | Hand-assembles `target/Aloud.app` (see Stack, above) — builds the release binary + the Swift OCR helper, writes the bundle Info.plist, ad-hoc codesigns |
+| `packaging/make-app.sh` | Hand-assembles `target/Aloud.app` (see Stack, above) — builds the release binary + the Swift OCR helper, writes the bundle Info.plist, signs with the self-signed "Aloud Dev" certificate (hard build failure if it's missing from the login keychain, since Task 10 — see `README.md`) |
 | `helpers/macos-ocr/` | Swift OCR helper binary source |
 | `tests/fixtures/` | Golden screenshots for OCR tests, text fixtures for the normalizer |
 

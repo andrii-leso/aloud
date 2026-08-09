@@ -110,8 +110,12 @@ window.addEventListener("keydown", async (e) => {
 
   if (MODIFIERS.has(e.code)) return;
 
-  // Dead keys report key === "Dead"; code is still meaningful, so this
-  // only guards the display label below.
+  // Dead keys report key === "Dead", but the chord model is built from
+  // `code` exclusively (never `key`) for exactly this reason — code
+  // stays meaningful regardless of dead-key state or active layout, and
+  // there is no key-based display logic here to guard: the recorded
+  // label comes back from `set_shortcut`'s Rust-side `pretty` string,
+  // not from anything computed in this file.
   const chord = {
     code: e.code,
     meta: e.metaKey,

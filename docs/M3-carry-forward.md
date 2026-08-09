@@ -22,9 +22,9 @@ API: `DeviceSinkBuilder::open_default_sink()` → `MixerDeviceSink::mixer()` →
 
 ## Landmines for the Windows port
 
-1. **`model_dir()` resolution order is `$ALOUD_MODEL_DIR` → `~/.cache/supertonic3` if it exists → `dirs::cache_dir()/supertonic3`.** The middle branch exists because the model is already at `~/.cache/supertonic3` on the Mac, while `dirs::cache_dir()` on macOS is `~/Library/Caches`. On Windows only the third branch applies. Decide deliberately where the 385 MB model lives on the PC rather than letting the two machines drift.
+1. **RESOLVED, 2026-08-09 (M4 platform research) — `model_dir()`'s third branch drops the model outside any app folder on Windows, and the fix is not "pick a path", it's "route through Tauri instead of raw `dirs`".** The original framing here was to "decide deliberately where the model lives" as if any of the three branches were viable; the M6 Windows research (`docs/M6-platform-research-windows.md` §3.6) inverts that. `dirs` 5.0 on Windows collapses cache and local-data into the same folder with no `Caches` subdirectory, so `dirs::cache_dir()` returns `%LOCALAPPDATA%` **itself** — not a subfolder of it. `model_dir()`'s third branch (`dirs::cache_dir()/supertonic3`, the only branch that applies on Windows, since the middle branch is a macOS-specific existing-path check) would therefore drop the 385 MB model directly in `%LOCALAPPDATA%\supertonic3`, outside `%LOCALAPPDATA%\<bundle identifier>\`. Tauri's NSIS uninstaller only deletes folders named after the bundle identifier, so that model directory is never cleaned up by anything — 385 MB orphaned on every uninstall, forever. **M6 must route `model_dir()` through Tauri's `app_cache_dir()` / `app_local_data_dir()` on Windows, not raw `dirs::cache_dir()`.**
 2. **`tests/engine_smoke.rs` pins synthesis duration to 6.566s ±0.01, baselined on aarch64 macOS.** x86-64 Windows may legitimately differ. Re-baseline per platform; do not send an agent chasing it as a regression.
-3. **Global hotkeys silently fail against elevated windows on Windows.** Unfixable OS behaviour. Document it; do not chase it.
+3. **CORRECTED, 2026-08-09 (M4 platform research) — not established that global hotkeys fail against elevated windows on Windows, at least not for the API Aloud uses.** The original claim here was written as verified fact; it isn't. The strong evidence (UIPI blocking cross-process window-message sends, and AutoHotkey's own FAQ) concerns `SetWindowsHookEx` and journal hooks — a different mechanism from the `RegisterHotKey` API `tauri-plugin-global-shortcut` actually calls. At least one well-sourced Windows-internals source states the opposite for `RegisterHotKey` specifically: that UIPI did not prevent it from triggering across the privilege boundary, because Explorer relies on it working that way for its own registered hotkeys. `RegisterHotKey`'s own documentation says nothing about integrity levels. **This is now a test item, not a documented limitation:** `docs/M6-platform-research-windows.md` §3.3 and question 24 give the exact manual test — run the app normally (not elevated), focus an elevated Command Prompt, and press the global shortcut; then confirm it still fires against a normal window. Do this before writing anything about the limitation into a PC-Queue brief, and correct or confirm this landmine in the same change set as the test result.
 4. **`cargo fmt` and the vendored file.** `rustfmt.toml`'s `ignore` key is nightly-only and inert on stable. The exclusion is instead `#[rustfmt::skip]` on the `pub mod supertonic;` declaration in `src/vendor/mod.rs`, which keeps the vendored bytes untouched. Do not "tidy" that attribute away.
 
 ## Performance, honestly
@@ -85,9 +85,11 @@ belongs to a binary that no longer exists.
 **Fix:** a self-signed code-signing certificate ("Aloud Dev", created once in Keychain
 Access). The DR becomes
 `identifier "com.andriileso.aloud" and certificate leaf = H"e83bf2a9..."` — stable
-across rebuilds. `packaging/make-app.sh` uses it and falls back to ad-hoc with a loud
-warning if absent. The cert does **not** need to be trusted; codesign accepts it.
-**Verified by deliberately rebuilding + reinstalling: the grant survived.**
+across rebuilds. `packaging/make-app.sh` uses it. (At the time of this writing it fell
+back to ad-hoc with a loud warning if the certificate was absent; M4 Task 10 replaced
+that fallback with a hard build failure, since a silent ad-hoc fallback reintroduces
+exactly this bug — see `README.md`.) The cert does **not** need to be trusted; codesign
+accepts it. **Verified by deliberately rebuilding + reinstalling: the grant survived.**
 
 A stable signing identity is a **development** requirement on macOS, not a distribution
 one. Notarization/Developer ID is the distribution concern. Do not conflate them again.
