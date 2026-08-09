@@ -106,14 +106,32 @@ if ! /usr/bin/plutil -extract NSServices xml1 -o - "$PLIST" >/dev/null 2>&1; the
     exit 1
 fi
 
+# The runtime config directory comes from tauri.conf.json's identifier
+# (baked in by generate_context!), NOT from CFBundleIdentifier above. They
+# are two independent hard-coded copies of the same string; if they drift,
+# user settings silently land in a directory nothing else reads while
+# everything else keeps working. Same silent-drift class the NSServices
+# merge-check above already caught once.
+CONF_ID="$(python3 -c 'import json,sys; print(json.load(open("tauri.conf.json"))["identifier"])')"
+PLIST_ID="$("$PB" -c "Print :CFBundleIdentifier" "$PLIST")"
+if [ "$CONF_ID" != "$PLIST_ID" ]; then
+  echo "ERROR: identifier mismatch." >&2
+  echo "  tauri.conf.json: $CONF_ID" >&2
+  echo "  Info.plist:      $PLIST_ID" >&2
+  echo "User settings would be written to a directory nothing else uses." >&2
+  exit 1
+fi
+
 # --- Codesign ----------------------------------------------------------------
 #
-# Prefer a stable self-signed identity over ad-hoc. This is not about Gatekeeper
-# — it is about TCC. macOS binds permission grants (Screen Recording) to the
+# A stable self-signed identity, never ad-hoc. This is not about Gatekeeper —
+# it is about TCC. macOS binds permission grants (Screen Recording) to the
 # app's designated requirement. Ad-hoc signing has no certificate, so the DR
 # falls back to the binary's cdhash, and EVERY rebuild produces a new hash and
 # silently invalidates the grant while System Settings still shows the app as
-# enabled. That cost us most of a debugging session.
+# enabled. That cost us most of a debugging session (Apple's own TN3127:
+# "Ad hoc signed code... has a DR but it's tied to that specific version of
+# the code").
 #
 # With a self-signed cert the DR becomes:
 #   identifier "com.andriileso.aloud" and certificate leaf = H"<cert hash>"
@@ -122,20 +140,42 @@ fi
 # Create the identity once: Keychain Access -> Certificate Assistant ->
 # Create a Certificate -> Self Signed Root, Code Signing, named as below.
 # It does not need to be trusted; codesign accepts an untrusted self-signed
-# cert. If it is absent we fall back to ad-hoc so the build still works.
-# Not for Gatekeeper — it gives the app a stable identity so macOS's
-# permission grants (Screen Recording) persist across rebuilds instead of
-# re-prompting every time the binary's hash changes.
+# cert. A missing cert is FATAL, not a warn-and-fall-back-to-ad-hoc: a
+# silent ad-hoc fallback is exactly what reintroduces the bug above.
 SIGN_IDENTITY="${ALOUD_SIGN_IDENTITY:-Aloud Dev}"
-if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
-  echo "==> codesigning $APP with \"$SIGN_IDENTITY\" (stable identity; TCC grants survive rebuilds)"
-  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
-else
-  echo "==> WARNING: signing identity \"$SIGN_IDENTITY\" not found — falling back to ad-hoc."
-  echo "    Screen Recording permission will need re-granting after every rebuild."
-  codesign --force --deep --sign - "$APP"
+
+if ! security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
+  echo "ERROR: signing certificate '$SIGN_IDENTITY' not found in the keychain." >&2
+  echo "" >&2
+  echo "This is fatal on purpose. Ad-hoc signing (--sign -) gives no" >&2
+  echo "certificate, so the designated requirement falls back to the" >&2
+  echo "binary's cdhash and EVERY rebuild silently invalidates the Screen" >&2
+  echo "Recording grant - while System Settings still shows the app as" >&2
+  echo "enabled. That cost a full debugging session once already." >&2
+  echo "" >&2
+  echo "Create it once in Keychain Access:" >&2
+  echo "  Certificate Assistant > Create a Certificate..." >&2
+  echo "  Name: Aloud Dev / Type: Code Signing / Self Signed Root" >&2
+  echo "It does not need to be trusted; codesign accepts it as is." >&2
+  exit 1
 fi
+
+# Inside-out, not --deep: Apple deprecated --deep for signing in macOS 13 and
+# warns it "may cause the trusted execution system to block your program
+# from running" (Apple DTS, "--deep Considered Harmful"). Sign the nested
+# helper first, with an explicit scoped identifier — the filename-derived
+# default ("aloud-ocr") is squattable by any other app shipping a binary of
+# that name — then sign the outer bundle.
+echo "==> codesigning $MACOS_DIR/aloud-ocr with \"$SIGN_IDENTITY\" (scoped identifier)"
+codesign --force --sign "$SIGN_IDENTITY" \
+  -i com.andriileso.aloud.aloud-ocr \
+  "$MACOS_DIR/aloud-ocr"
+
+echo "==> codesigning $APP with \"$SIGN_IDENTITY\" (stable identity; TCC grants survive rebuilds)"
+codesign --force --sign "$SIGN_IDENTITY" "$APP"
+
 codesign -dv "$APP"
+codesign -dv "$MACOS_DIR/aloud-ocr"
 
 echo "==> disk after:"
 df -h / | tail -1
