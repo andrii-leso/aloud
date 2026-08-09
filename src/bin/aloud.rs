@@ -496,3 +496,71 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running Aloud");
 }
+
+/// Characterisation tests for `pretty_accelerator`. Its inverse,
+/// `Chord::to_accelerator` (`src/shortcut.rs`), already has a full suite in
+/// `tests/shortcut.rs`; this covers the same class of case for the display
+/// side, since Task 6 extends `pretty_accelerator` to render arbitrary
+/// user-entered chords and a careless edit here would otherwise go
+/// uncaught until someone noticed a wrong glyph on screen.
+#[cfg(test)]
+mod tests {
+    use super::pretty_accelerator;
+
+    #[test]
+    fn default_region_shortcut_renders_as_the_shipped_menu_string() {
+        // Matches `settings::DEFAULT_SHORTCUT` and the exact string in the
+        // shipped tray menu's Read Region item.
+        assert_eq!(pretty_accelerator("CmdOrCtrl+Shift+R"), "⌘⇧R");
+    }
+
+    #[test]
+    fn all_four_modifiers_render_in_the_order_to_accelerator_emits_them() {
+        // `Chord::to_accelerator` always builds accelerators in this fixed
+        // order (CmdOrCtrl, Alt, Control, Shift, then key — see
+        // `src/shortcut.rs`), and `pretty_accelerator` just walks the
+        // string left to right, so the glyphs must come out in the same
+        // order. A careless edit (e.g. reordering the match arms and
+        // assuming that's cosmetic) would scramble this silently.
+        assert_eq!(pretty_accelerator("CmdOrCtrl+Alt+Control+Shift+R"), "⌘⌥⌃⇧R");
+    }
+
+    #[test]
+    fn multi_character_key_tokens_keep_their_original_casing() {
+        assert_eq!(pretty_accelerator("CmdOrCtrl+Shift+ArrowUp"), "⌘⇧ArrowUp");
+        assert_eq!(pretty_accelerator("Alt+F7"), "⌥F7");
+    }
+
+    #[test]
+    fn modifier_matching_is_case_insensitive_but_the_key_is_passed_through_as_is() {
+        // Only the modifier tokens are lowercased before matching; the key
+        // token is never touched, so it comes out exactly as given —
+        // here that happens to be lowercase because the input was.
+        assert_eq!(pretty_accelerator("cmdorctrl+shift+r"), "⌘⇧r");
+    }
+
+    // `pretty_accelerator` is display-only — the canonical form used for
+    // actual registration is always the plugin's own accelerator string,
+    // produced by `Chord::to_accelerator`, which never emits any of the
+    // malformed shapes below. These three exist purely so a future edit
+    // cannot reintroduce a panic (e.g. an unchecked index or unwrap) on
+    // input this function was never guaranteed well-formed input to begin
+    // with. The accepted behaviour for malformed input is: modifiers
+    // found are still rendered, and a missing/empty key renders as
+    // nothing (not a placeholder, not an error) — asserted explicitly
+    // below rather than merely checking these don't panic.
+    #[test]
+    fn empty_input_yields_an_empty_string() {
+        assert_eq!(pretty_accelerator(""), "");
+    }
+
+    #[test]
+    fn trailing_separator_with_no_key_drops_the_key_silently() {
+        assert_eq!(pretty_accelerator("CmdOrCtrl+"), "⌘");
+    }
+
+    #[test]
+    fn modifiers_only_with_no_key_renders_just_the_modifiers() {
+        assert_eq!(pretty_accelerator("Shift"), "⇧");
+    }
+}
