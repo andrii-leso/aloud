@@ -27,7 +27,24 @@ const MODIFIERS = new Set([
   "AltLeft", "AltRight", "MetaLeft", "MetaRight",
 ]);
 
+// Handle of the pending liveness-probe timeout (see beginProbe below), or
+// null when no probe is outstanding. Module-level like `recording` — this
+// whole file is reloaded fresh every time the settings window is
+// (re)created, so there is nothing to reset on open.
+let probeTimer = null;
+
 function startRecording() {
+  // Starting a new recording abandons any chord that was just saved and
+  // is still waiting on a press to confirm it — clear that probe rather
+  // than leaving it to time out on its own 10s later, after the user has
+  // already moved on to a different chord. Mirrors clearing on Escape,
+  // success, and window close: every way of leaving the "waiting to
+  // confirm" state disarms the probe.
+  if (probeTimer !== null) {
+    clearTimeout(probeTimer);
+    probeTimer = null;
+    invoke("end_probe");
+  }
   recording = true;
   recordBtn.classList.add("recording");
   recordBtn.textContent = "Press a shortcut…";
@@ -40,9 +57,34 @@ async function stopRecording(restoreLabel) {
   if (restoreLabel) recordBtn.textContent = restoreLabel;
 }
 
-// Liveness confirmation ("press it now to confirm it works") — built in
-// Task 8. Stubbed here so the recorder works end to end without it.
-async function beginProbe() {}
+// Liveness confirmation ("press it now to confirm it works"). macOS
+// registers hotkeys non-exclusively — register() succeeds even for a
+// chord another app already owns, and the press is then silently
+// shadowed with no API to detect it. Asking the user to press the chord
+// and watching for a real ShortcutState::Pressed to arrive is the only
+// honest confirmation available.
+async function beginProbe() {
+  await invoke("begin_probe");
+  clearTimeout(probeTimer);
+  // Ten seconds is long enough to reach for a chord and short enough
+  // that a forgotten window does not swallow a real hotkey press later.
+  probeTimer = setTimeout(async () => {
+    probeTimer = null;
+    await invoke("end_probe");
+    setStatus(
+      chordStatus,
+      "Aloud never saw that shortcut. Another app is probably using it — " +
+        "macOS does not report this, so trying a different one is the only fix.",
+      "error"
+    );
+  }, 10000);
+}
+
+window.__TAURI__.event.listen("aloud://probe-fired", () => {
+  clearTimeout(probeTimer);
+  probeTimer = null;
+  setStatus(chordStatus, "Confirmed — that shortcut works.", "ok");
+});
 
 recordBtn.addEventListener("click", () => {
   if (!recording) startRecording();
@@ -78,14 +120,33 @@ window.addEventListener("keydown", async (e) => {
     shift: e.shiftKey,
   };
 
+  // Re-entrancy guard: a physically held key fires OS key-repeat, which
+  // means keydown for the same chord can arrive again before this async
+  // set_shortcut/beginProbe round trip has resolved. set_shortcut itself
+  // is idempotent, so a duplicate call there is harmless — but a second
+  // concurrent beginProbe() would arm a second, independent 10s timer,
+  // and only the most recently assigned `probeTimer` handle ever gets
+  // cleared (by a real confirmation or by starting a new recording). The
+  // orphaned first timer keeps running regardless and, ~10s after ITS
+  // start, overwrites a genuine "Confirmed" message with the false
+  // "never saw that shortcut" error. Flipping `recording` false here,
+  // before the await, closes that window: a repeat keydown sees
+  // `recording === false` at the top of this handler and returns
+  // immediately, never re-entering this block. `stopRecording()` below
+  // already sets it false on the success path; explicitly restoring it
+  // on failure keeps the existing "stay in recording mode after a
+  // rejected chord" behaviour intact.
+  recording = false;
+
   try {
     const pretty = await invoke("set_shortcut", { chord });
     stopRecording(pretty);
     setStatus(chordStatus, "Saved. Press it now to confirm it works.", null);
-    beginProbe();  // Task 8
+    beginProbe();
   } catch (err) {
     // Stay in recording mode so the user can immediately try another
     // chord rather than clicking the button again.
+    recording = true;
     setStatus(chordStatus, String(err), "error");
   }
 });

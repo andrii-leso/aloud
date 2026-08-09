@@ -13,11 +13,12 @@ use aloud::play::sink::RodioSink;
 use aloud::settings::{Settings, VOICES};
 use aloud::shortcut::Chord;
 use aloud::tts::supertonic_engine::SupertonicEngine;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
 /// Matches `aloud-say`'s default (`src/bin/aloud_say.rs`). A voice picker
@@ -180,10 +181,47 @@ fn apply_shortcut(app: &tauri::AppHandle, old: Option<&str>, new: &str) -> Resul
     Ok(())
 }
 
-/// Stub — a liveness probe is added in Task 8. For now no shortcut press
-/// is ever a probe, so every press runs the normal read-region flow.
-fn probe_consumed(_: &tauri::AppHandle, _: &Shortcut) -> bool {
-    false
+/// True while the settings window is waiting for the user to press the
+/// newly-bound chord as proof it actually works. macOS registers Carbon
+/// hotkeys non-exclusively: `register()` returns `Ok(())` for a chord
+/// already owned by macOS or another app, and the event is then silently
+/// shadowed — there is no API that reports that contention. A press
+/// arriving while this flag is set is the only honest confirmation
+/// available, so it is consumed as proof-of-life instead of starting a
+/// region capture (otherwise confirming your shortcut would fire a
+/// crosshair at you).
+static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// The probe's actual state transition: arm-once, consume-once. Pulled out
+/// of `probe_consumed` so the swap-and-check logic — the part that makes a
+/// second, unrelated press unable to falsely "confirm" a stale probe — has
+/// a unit test that does not need a `tauri::AppHandle` to construct.
+fn take_probe(flag: &AtomicBool) -> bool {
+    flag.swap(false, Ordering::SeqCst)
+}
+
+/// Clears the probe flag and logs why. Shared by the `end_probe` IPC
+/// command — called by the settings page on a 10s timeout and when the
+/// user starts recording a different chord — and the settings-window
+/// close handlers below, which cannot rely on the page's own JS running
+/// to make that same call once its webview has already been torn down.
+fn disarm_probe(reason: &str) {
+    PROBE_ACTIVE.store(false, Ordering::SeqCst);
+    aloud::log_line!("probe: disarmed ({reason})");
+}
+
+/// Consumes a hotkey press as a liveness confirmation if the settings page
+/// just armed one, instead of letting it fall through to the normal
+/// read-region flow. See `PROBE_ACTIVE` for why this exists.
+fn probe_consumed(app: &tauri::AppHandle, _shortcut: &Shortcut) -> bool {
+    if !take_probe(&PROBE_ACTIVE) {
+        return false;
+    }
+    aloud::log_line!("hotkey: probe confirmed");
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.emit("aloud://probe-fired", ());
+    }
+    true
 }
 
 /// `"CmdOrCtrl+Shift+R"` → `"⌘⇧R"`. Display only — the canonical form
@@ -322,6 +360,23 @@ fn set_live_speed(_app: &tauri::AppHandle, speed: f32) {
     aloud::log_line!("set_speed: live speed update not built yet (Task 9), wanted {speed}");
 }
 
+/// Arms the liveness probe: the next real hotkey press is consumed as a
+/// confirmation instead of starting a region capture. Called by the
+/// settings page right after a rebind succeeds.
+#[tauri::command]
+fn begin_probe() {
+    PROBE_ACTIVE.store(true, Ordering::SeqCst);
+    aloud::log_line!("probe: armed");
+}
+
+/// Disarms the liveness probe without waiting for a press. Called by the
+/// settings page on its 10s timeout and when the user starts recording a
+/// different chord before confirming the current one.
+#[tauri::command]
+fn end_probe() {
+    disarm_probe("page request");
+}
+
 /// Deep link to Keyboard Shortcuts → Services, shared by the tray menu's
 /// "Change Selection Shortcut…" item and the `open_services_settings` IPC
 /// command below — one process, one failure path.
@@ -389,6 +444,13 @@ fn open_settings_window(app: &tauri::AppHandle) {
                         // so no Dock icon lingers.
                         #[cfg(target_os = "macos")]
                         let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        // A pending probe belongs to this webview's JS,
+                        // which is about to be destroyed along with the
+                        // window — its 10s timeout will never fire to
+                        // clear PROBE_ACTIVE on its own, so a forgotten
+                        // window would otherwise leave a real hotkey press
+                        // silently swallowed forever.
+                        disarm_probe("settings window closed");
                     }
                 }
             });
@@ -437,6 +499,8 @@ fn main() {
             set_voice,
             set_speed,
             open_services_settings,
+            begin_probe,
+            end_probe,
         ])
         .setup(|app| {
             // Menubar app: no Dock icon, no window.
@@ -576,6 +640,11 @@ fn main() {
                         // app the next time it's opened.
                         #[cfg(target_os = "macos")]
                         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                        // See the matching comment in open_settings_window's
+                        // builder branch: this window's JS is torn down on
+                        // close, so its 10s probe timeout can never run —
+                        // clear PROBE_ACTIVE here instead.
+                        disarm_probe("settings window closed");
                     }
                 });
             }
@@ -759,6 +828,52 @@ mod tests {
     #[test]
     fn modifiers_only_with_no_key_renders_just_the_modifiers() {
         assert_eq!(pretty_accelerator("Shift"), "⇧");
+    }
+}
+
+/// Unit tests for `take_probe`, the swap-and-check that decides whether a
+/// hotkey press is a liveness confirmation. Each test uses its own local
+/// `AtomicBool` rather than the process-wide `PROBE_ACTIVE`, since the
+/// real static is shared with every other test in this binary (including
+/// the IPC tests below, which run concurrently by default) and would make
+/// these flaky/order-dependent for no reason — the function under test
+/// takes the flag as a parameter for exactly this reason.
+#[cfg(test)]
+mod probe_tests {
+    use super::take_probe;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn disarmed_flag_is_never_taken() {
+        let flag = AtomicBool::new(false);
+        assert!(!take_probe(&flag));
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn armed_flag_is_taken_exactly_once() {
+        // This is the property that makes double-consumption impossible:
+        // an OS key-repeat or a second stray press arriving right after a
+        // real confirmation must not be able to "confirm" a second time
+        // off the same arm, because there is nothing left to take.
+        let flag = AtomicBool::new(true);
+        assert!(take_probe(&flag), "the first press must consume the arm");
+        assert!(
+            !take_probe(&flag),
+            "a second press must find nothing left to consume"
+        );
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn re_arming_after_a_take_works_again() {
+        // Mirrors begin_probe -> (confirmed) -> begin_probe for a second
+        // rebind attempt: taking the flag must not leave it permanently
+        // unusable.
+        let flag = AtomicBool::new(true);
+        assert!(take_probe(&flag));
+        flag.store(true, Ordering::SeqCst);
+        assert!(take_probe(&flag));
     }
 }
 
