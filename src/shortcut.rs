@@ -1,0 +1,173 @@
+//! Turning a chord recorded in the settings webview into an accelerator
+//! string `tauri-plugin-global-shortcut` can parse.
+//!
+//! The important thing this module does NOT do is tell you whether a
+//! chord is free. It cannot: macOS registers Carbon hotkeys
+//! non-exclusively, so `register()` returns `Ok(())` for a chord already
+//! owned by the system or another app and the event is then silently
+//! shadowed (CarbonEvents.h: "it is not an error to register the same hot
+//! key in multiple processes"). `is_registered()` only reports our own
+//! bookkeeping. The denylist below therefore covers the *documented*
+//! system chords only, and everything else is confirmed empirically by
+//! asking the user to press the chord after saving.
+
+use serde::Deserialize;
+use std::fmt;
+
+/// A chord as recorded by a `keydown` listener in the settings page.
+/// `code` is `KeyboardEvent.code` — layout-invariant, and 1:1 with the
+/// plugin's key names and with macOS virtual keycodes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Chord {
+    pub code: String,
+    pub meta: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChordError {
+    NoModifier,
+    MediaKey,
+    Unsupported(String),
+    SystemReserved(String),
+}
+
+impl fmt::Display for ChordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoModifier => write!(
+                f,
+                "Add at least one modifier — a plain key would fire while you type."
+            ),
+            Self::MediaKey => write!(
+                f,
+                "Media keys can't be used. They would make macOS ask for Accessibility access, \
+                 and Aloud never asks for that."
+            ),
+            Self::Unsupported(k) => write!(f, "That key ({k}) can't be used as a shortcut."),
+            Self::SystemReserved(what) => {
+                write!(f, "macOS already uses that shortcut for {what}.")
+            }
+        }
+    }
+}
+
+/// The five keys `global-hotkey` routes into `start_watching_media_keys`,
+/// which is the only path in the whole dependency chain that calls
+/// `CGEventTapCreate` — and therefore the only one that can produce an
+/// Accessibility / Input Monitoring prompt. Rejecting them here means the
+/// tap is never created.
+const MEDIA_KEYS: [&str; 5] = [
+    "MediaPlayPause",
+    "MediaTrackNext",
+    "MediaTrackPrevious",
+    "MediaFastForward",
+    "MediaRewind",
+];
+
+/// Documented system shortcuts (Apple support 102650). Registering any of
+/// these succeeds and then does nothing, so this list is the only place
+/// the user can be told the truth.
+/// Tuple: (code, meta, ctrl, alt, shift, what it does).
+const SYSTEM_CHORDS: [(&str, bool, bool, bool, bool, &str); 8] = [
+    ("Space", true, false, false, false, "Spotlight"),
+    (
+        "Space",
+        true,
+        false,
+        false,
+        true,
+        "the previous input source",
+    ),
+    ("Tab", true, false, false, false, "switching apps"),
+    ("Digit3", true, false, false, true, "screenshots"),
+    ("Digit4", true, false, false, true, "screenshots"),
+    ("Digit5", true, false, false, true, "screenshots"),
+    ("ArrowUp", false, true, false, false, "Mission Control"),
+    ("ArrowDown", false, true, false, false, "App Exposé"),
+];
+
+/// Codes that are modifiers themselves — a `keydown` fires for these
+/// while the user is still assembling a chord, and they can never be the
+/// main key.
+const MODIFIER_CODES: [&str; 8] = [
+    "ShiftLeft",
+    "ShiftRight",
+    "ControlLeft",
+    "ControlRight",
+    "AltLeft",
+    "AltRight",
+    "MetaLeft",
+    "MetaRight",
+];
+
+impl Chord {
+    pub fn to_accelerator(&self) -> Result<String, ChordError> {
+        if MEDIA_KEYS.contains(&self.code.as_str()) {
+            return Err(ChordError::MediaKey);
+        }
+        if MODIFIER_CODES.contains(&self.code.as_str()) {
+            return Err(ChordError::Unsupported(self.code.clone()));
+        }
+        // Neither `parse_key` nor `key_to_scancode` in global-hotkey 0.8
+        // knows this ISO-keyboard key; registering it is a hard failure.
+        if self.code == "IntlBackslash" {
+            return Err(ChordError::Unsupported(self.code.clone()));
+        }
+        if !(self.meta || self.ctrl || self.alt || self.shift) {
+            return Err(ChordError::NoModifier);
+        }
+        for (code, meta, ctrl, alt, shift, what) in SYSTEM_CHORDS {
+            if self.code == code
+                && self.meta == meta
+                && self.ctrl == ctrl
+                && self.alt == alt
+                && self.shift == shift
+            {
+                return Err(ChordError::SystemReserved(what.to_string()));
+            }
+        }
+
+        let key = normalize_code(&self.code)?;
+
+        let mut parts: Vec<&str> = Vec::with_capacity(5);
+        // Fixed order, so the same chord always produces the same string
+        // no matter which modifier the user pressed first.
+        if self.meta {
+            parts.push("CmdOrCtrl");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.ctrl {
+            parts.push("Control");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        parts.push(&key);
+        Ok(parts.join("+"))
+    }
+}
+
+/// `KeyboardEvent.code` → the plugin's key token. `KeyR` → `R`,
+/// `Digit5` → `5`; everything else (`ArrowUp`, `Backquote`, `F7`,
+/// `Space`, `Enter`) is already the plugin's own name.
+fn normalize_code(code: &str) -> Result<String, ChordError> {
+    if let Some(rest) = code.strip_prefix("Key") {
+        if rest.len() == 1 {
+            return Ok(rest.to_string());
+        }
+    }
+    if let Some(rest) = code.strip_prefix("Digit") {
+        if rest.len() == 1 {
+            return Ok(rest.to_string());
+        }
+    }
+    if code.is_empty() {
+        return Err(ChordError::Unsupported("unknown".into()));
+    }
+    Ok(code.to_string())
+}

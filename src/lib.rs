@@ -5,6 +5,7 @@ pub mod ocr;
 pub mod play;
 pub mod selection;
 pub mod settings;
+pub mod shortcut;
 pub mod text;
 pub mod tts;
 pub mod vendor;
