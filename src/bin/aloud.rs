@@ -54,6 +54,15 @@ struct Runtime {
     /// `Player` around the same audio output rather than opening a second
     /// device — only the engine changes.
     sink: Arc<dyn AudioSink>,
+    /// The accelerator actually registered with the OS's global-shortcut
+    /// plugin right now, or `None` if nothing is. This is ground truth for
+    /// `apply_shortcut`'s rollback/no-op decisions, and it is deliberately
+    /// NOT the same thing as `SettingsState.settings.region_shortcut` (the
+    /// persisted, user-facing value) — those two can diverge (e.g. a
+    /// persisted chord that failed to register at startup), and treating
+    /// them as interchangeable was the Task 9 fix-round-1 bug: see
+    /// `apply_shortcut`'s doc comment.
+    registered_shortcut: Mutex<Option<String>>,
 }
 
 /// The status menu item's text when nothing is wrong.
@@ -134,8 +143,65 @@ fn spawn_read_region(rt: Arc<Runtime>) {
     });
 }
 
-/// Moves the region hotkey from `old` to `new`, rolling back to `old` if
-/// the new one will not register.
+/// The two OS operations `apply_shortcut_with` needs, seamed out — same
+/// pattern as `RegionSelector`/`OcrEngine`/`TtsEngine`/`AudioSink`
+/// elsewhere in this crate — so the registered-shortcut bookkeeping that
+/// closes the Task 9 fix-round-1 bug (see `apply_shortcut`'s doc comment)
+/// has a unit test that needs no live `tauri::AppHandle`/global-shortcut
+/// plugin to construct.
+trait ShortcutRegistrar {
+    fn register(&self, accel: &str) -> Result<(), String>;
+    fn unregister(&self, accel: &str) -> Result<(), String>;
+}
+
+/// The real registrar: `tauri_plugin_global_shortcut`'s `AppHandle`
+/// extension, wrapped so `apply_shortcut_with` never depends on the
+/// concrete plugin type.
+struct GlobalShortcutRegistrar<'a>(&'a tauri::AppHandle);
+
+impl ShortcutRegistrar for GlobalShortcutRegistrar<'_> {
+    fn register(&self, accel: &str) -> Result<(), String> {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        self.0
+            .global_shortcut()
+            .register(accel)
+            .map_err(|e| e.to_string())
+    }
+    fn unregister(&self, accel: &str) -> Result<(), String> {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        self.0
+            .global_shortcut()
+            .unregister(accel)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Moves the region hotkey to `new`, rolling back if it will not
+/// register. Thin wrapper around `apply_shortcut_with` for the real OS —
+/// see that function for the logic and for why `old` is no longer a
+/// parameter here.
+fn apply_shortcut(app: &tauri::AppHandle, rt: &Runtime, new: &str) -> Result<(), String> {
+    apply_shortcut_with(&GlobalShortcutRegistrar(app), &rt.registered_shortcut, new)
+}
+
+/// Moves the region hotkey to `new`, rolling back to the previous one if
+/// `new` will not register.
+///
+/// `old` — what `plan_apply` diffs against, and what a failed `new` rolls
+/// back to — is read from `registered`, not supplied by the caller. It
+/// used to be: the one call site that ever passed `Some` (`set_shortcut`)
+/// sourced it from `SettingsState.region_shortcut`, the *persisted* value.
+/// That is wrong whenever persisted and actually-registered diverge — for
+/// example a chord that failed to register at startup (both it and the
+/// default rejected): `SettingsState` still names the dead chord, so a
+/// user "confirming" that exact chord in Settings made `plan_apply` see
+/// `old == new` and return its empty no-op plan. `register()` was never
+/// called at all, while `set_shortcut` still reported success and
+/// persisted — the hotkey stayed permanently dead, and the later liveness
+/// probe blamed a third-party app for the silence instead (Task 9 fix
+/// round 1). `registered` cannot drift this way: every step below writes
+/// it at the moment that step's real OS outcome is known, so it is never
+/// inferred from what the user asked to save.
 ///
 /// Note what this canNOT do: report that a chord is already owned by
 /// macOS or another app. Carbon registers non-exclusively, so that case
@@ -147,38 +213,45 @@ fn spawn_read_region(rt: Arc<Runtime>) {
 /// error says plainly that there is currently no region shortcut at all,
 /// rather than reusing the ordinary "new chord rejected" message — that
 /// message would read as if `old` were still working when it is not.
-/// `set_shortcut` is the first caller where `old` is ever `Some`, so this
-/// path was unreachable before Task 6.
-fn apply_shortcut(app: &tauri::AppHandle, old: Option<&str>, new: &str) -> Result<(), String> {
+fn apply_shortcut_with(
+    registrar: &impl ShortcutRegistrar,
+    registered: &Mutex<Option<String>>,
+    new: &str,
+) -> Result<(), String> {
     use aloud::shortcut::Step;
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-    let gs = app.global_shortcut();
-    for step in aloud::shortcut::plan_apply(old, new) {
+    let old = registered.lock().unwrap().clone();
+    for step in aloud::shortcut::plan_apply(old.as_deref(), new) {
         match step {
             Step::Unregister(s) => {
                 // Returns Ok for a chord that was never registered, so a
                 // failure here is a real one.
-                if let Err(e) = gs.unregister(s.as_str()) {
+                if let Err(e) = registrar.unregister(s.as_str()) {
                     return Err(format!("could not release {s}: {e}"));
                 }
+                *registered.lock().unwrap() = None;
             }
             Step::Register(s) => {
-                if let Err(e) = gs.register(s.as_str()) {
-                    if let Some(o) = old {
-                        if gs.register(o).is_err() {
+                if let Err(e) = registrar.register(s.as_str()) {
+                    if let Some(o) = old.as_deref() {
+                        if registrar.register(o).is_err() {
                             // Both the new chord and the rollback failed:
                             // the app now has NO region hotkey. Say so,
                             // rather than reporting the ordinary "new
                             // chord rejected" case.
+                            *registered.lock().unwrap() = None;
                             return Err(format!(
                                 "could not register {s}, and restoring {o} also failed - \
                                  there is currently no region shortcut. Open Settings and pick one."
                             ));
                         }
+                        // Rollback succeeded: the OS (and the tracked
+                        // state) is back on `old`.
+                        *registered.lock().unwrap() = Some(o.to_string());
                     }
                     return Err(format!("could not register {s}: {e}"));
                 }
+                *registered.lock().unwrap() = Some(s);
             }
         }
     }
@@ -296,8 +369,12 @@ fn set_shortcut(
 ) -> Result<String, String> {
     let accel = chord.to_accelerator().map_err(|e| e.to_string())?;
 
-    let old = { state.settings.lock().unwrap().region_shortcut.clone() };
-    apply_shortcut(&app, Some(&old), &accel)?;
+    // `old` for apply_shortcut comes from `rt.registered_shortcut` (OS
+    // ground truth), not from `state.settings.region_shortcut` (the
+    // persisted value) — see `apply_shortcut`'s doc comment for the bug
+    // that conflating them caused.
+    let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
+    apply_shortcut(&app, &rt, &accel)?;
 
     {
         let mut s = state.settings.lock().unwrap();
@@ -656,6 +733,9 @@ fn main() {
                 status_item,
                 read_region_item,
                 sink,
+                // Nothing is registered with the OS yet — the block below
+                // is what first does that.
+                registered_shortcut: Mutex::new(None),
             });
             app.manage(runtime);
             app.manage(SettingsState {
@@ -699,14 +779,14 @@ fn main() {
                 let handle = app.handle().clone();
                 let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
                 let wanted = settings.region_shortcut.clone();
-                match apply_shortcut(&handle, None, &wanted) {
+                match apply_shortcut(&handle, &rt, &wanted) {
                     Ok(()) => {
                         aloud::log_line!("hotkey: registered {wanted}");
                     }
                     Err(e) => {
                         aloud::log_line!("hotkey: failed to register {wanted}: {e}");
                         if wanted != aloud::settings::DEFAULT_SHORTCUT {
-                            match apply_shortcut(&handle, None, aloud::settings::DEFAULT_SHORTCUT) {
+                            match apply_shortcut(&handle, &rt, aloud::settings::DEFAULT_SHORTCUT) {
                                 Ok(()) => {
                                     aloud::log_line!(
                                         "hotkey: fell back to {}",
@@ -1044,5 +1124,168 @@ mod command_tests {
         assert_eq!(value["speed"], 1.0);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Regression coverage for the Task 9 fix-round-1 bug: `apply_shortcut`
+/// used to source `old` from `SettingsState.region_shortcut` (persisted)
+/// instead of what was actually registered with the OS, which let a
+/// stale persisted chord make `plan_apply` see a false no-op and silently
+/// skip `register()` while still reporting success. `apply_shortcut_with`
+/// — the core logic, seamed behind `ShortcutRegistrar` — is exercised
+/// directly here with a `FakeRegistrar`, needing no live
+/// `tauri::AppHandle` or global-shortcut plugin, unlike `apply_shortcut`
+/// itself (concrete `&tauri::AppHandle`, same `MockRuntime` wall
+/// documented on `command_tests` above).
+#[cfg(test)]
+mod shortcut_registration_tests {
+    use super::*;
+
+    /// A `ShortcutRegistrar` whose `register` outcome is scripted per
+    /// accelerator (`unregister` always succeeds — nothing in this file's
+    /// logic branches on it failing except by propagating the error
+    /// as-is), and which records every call so a test can assert not just
+    /// the final tracked state but which OS calls actually happened.
+    struct FakeRegistrar {
+        fails_to_register: Vec<String>,
+        register_calls: Mutex<Vec<String>>,
+        unregister_calls: Mutex<Vec<String>>,
+    }
+
+    impl FakeRegistrar {
+        fn new() -> Self {
+            Self::failing(&[])
+        }
+
+        fn failing(accels: &[&str]) -> Self {
+            Self {
+                fails_to_register: accels.iter().map(|s| s.to_string()).collect(),
+                register_calls: Mutex::new(Vec::new()),
+                unregister_calls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ShortcutRegistrar for FakeRegistrar {
+        fn register(&self, accel: &str) -> Result<(), String> {
+            self.register_calls.lock().unwrap().push(accel.to_string());
+            if self.fails_to_register.iter().any(|a| a == accel) {
+                Err(format!("fake: {accel} rejected"))
+            } else {
+                Ok(())
+            }
+        }
+        fn unregister(&self, accel: &str) -> Result<(), String> {
+            self.unregister_calls
+                .lock()
+                .unwrap()
+                .push(accel.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn confirming_a_chord_still_registers_it_when_nothing_is_actually_registered() {
+        // The bug, reproduced directly: `registered` tracks OS ground
+        // truth (None — nothing is live), entirely independent of
+        // whatever a persisted `Settings` value might say. This is
+        // exactly the state after both a persisted chord and the default
+        // fail to register at startup — `SettingsState.region_shortcut`
+        // still names the dead chord, and the settings page pre-fills
+        // the record button with it (dist/settings.js). Before the fix,
+        // `set_shortcut` sourced `old` from that persisted value, so
+        // confirming the very chord already on screen made `plan_apply`
+        // see `old == new` and return its no-op empty plan — `register`
+        // was never called, while `set_shortcut` still reported success.
+        let registrar = FakeRegistrar::new();
+        let registered: Mutex<Option<String>> = Mutex::new(None);
+
+        let result = apply_shortcut_with(&registrar, &registered, "CmdOrCtrl+Shift+R");
+
+        assert!(result.is_ok());
+        assert_eq!(
+            registrar.register_calls.lock().unwrap().as_slice(),
+            ["CmdOrCtrl+Shift+R"],
+            "register() must actually have been called — this is exactly \
+             the call the old (broken) settings-sourced `old` would skip"
+        );
+        assert_eq!(
+            registered.lock().unwrap().as_deref(),
+            Some("CmdOrCtrl+Shift+R"),
+            "the tracked state must reflect the real, now-successful registration"
+        );
+    }
+
+    #[test]
+    fn rebinding_to_the_same_actually_registered_chord_is_still_a_true_no_op() {
+        // The mirror case: when `registered` really does hold the chord
+        // being "rebound" to, the no-op optimization is correct and must
+        // still apply — no wasted unregister/register round trip, and
+        // `plan_apply`'s own coverage (`tests/shortcut_apply.rs`) already
+        // proves this at the planning level; this proves it holds through
+        // `apply_shortcut_with`'s use of `registered` as `old` too.
+        let registrar = FakeRegistrar::new();
+        let registered = Mutex::new(Some("CmdOrCtrl+Shift+R".to_string()));
+
+        let result = apply_shortcut_with(&registrar, &registered, "CmdOrCtrl+Shift+R");
+
+        assert!(result.is_ok());
+        assert!(registrar.register_calls.lock().unwrap().is_empty());
+        assert!(registrar.unregister_calls.lock().unwrap().is_empty());
+        assert_eq!(
+            registered.lock().unwrap().as_deref(),
+            Some("CmdOrCtrl+Shift+R")
+        );
+    }
+
+    #[test]
+    fn rebinding_to_a_different_chord_updates_the_tracked_state() {
+        let registrar = FakeRegistrar::new();
+        let registered = Mutex::new(Some("CmdOrCtrl+Shift+R".to_string()));
+
+        let result = apply_shortcut_with(&registrar, &registered, "Alt+Shift+E");
+
+        assert!(result.is_ok());
+        assert_eq!(
+            registrar.unregister_calls.lock().unwrap().as_slice(),
+            ["CmdOrCtrl+Shift+R"]
+        );
+        assert_eq!(
+            registrar.register_calls.lock().unwrap().as_slice(),
+            ["Alt+Shift+E"]
+        );
+        assert_eq!(registered.lock().unwrap().as_deref(), Some("Alt+Shift+E"));
+    }
+
+    #[test]
+    fn a_rejected_new_chord_rolls_back_and_the_tracked_state_stays_on_the_old_one() {
+        let registrar = FakeRegistrar::failing(&["Alt+Shift+E"]);
+        let registered = Mutex::new(Some("CmdOrCtrl+Shift+R".to_string()));
+
+        let result = apply_shortcut_with(&registrar, &registered, "Alt+Shift+E");
+
+        assert!(result.is_err());
+        assert_eq!(
+            registered.lock().unwrap().as_deref(),
+            Some("CmdOrCtrl+Shift+R"),
+            "rollback succeeded, so the OS (and the tracked state) is back \
+             on the old chord"
+        );
+    }
+
+    #[test]
+    fn a_rejected_new_chord_whose_rollback_also_fails_leaves_the_tracked_state_empty() {
+        let registrar = FakeRegistrar::failing(&["Alt+Shift+E", "CmdOrCtrl+Shift+R"]);
+        let registered = Mutex::new(Some("CmdOrCtrl+Shift+R".to_string()));
+
+        let result = apply_shortcut_with(&registrar, &registered, "Alt+Shift+E");
+
+        assert!(result.is_err());
+        assert_eq!(
+            registered.lock().unwrap().as_deref(),
+            None,
+            "both the new chord and the rollback failed — the OS genuinely \
+             has nothing registered, and the tracked state must say so"
+        );
     }
 }
