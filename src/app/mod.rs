@@ -14,6 +14,19 @@
 //! considered and rejected: it would interrupt whatever the user is
 //! already listening to on every stray double-press, which is worse
 //! ordinary-use behaviour than just ignoring the repeat.
+//!
+//! A separate, unrelated concern: the `Player` itself can be replaced
+//! outright — a live voice change (Task 9) rebuilds the whole engine and
+//! swaps in a new `Player`. That is guarded by a `RwLock` around `Player`,
+//! not the busy flag: `read_region`/`speak_selection` take a read lock for
+//! the duration of one `speak()` call, and `swap_player` takes the write
+//! lock. A write lock request blocks until every outstanding read lock
+//! releases, so a voice change that lands mid-utterance waits for that
+//! utterance to finish rather than cutting it off — it does not call
+//! `stop()`. The busy flag and the `RwLock` compose without conflict:
+//! the busy flag serializes *speak* calls against each other, the
+//! `RwLock` serializes a *swap* against whichever speak call (if any)
+//! currently holds the read lock.
 
 pub mod actions;
 
@@ -21,28 +34,69 @@ use crate::capture::RegionSelector;
 use crate::ocr::OcrEngine;
 use crate::play::player::Player;
 use anyhow::Result;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::RwLock;
 
 /// Holds the shared `Player` and the busy guard around it.
 pub struct App {
-    player: Player,
+    // RwLock rather than a plain field: a voice change replaces the whole
+    // Player (the voice style is loaded into the engine at construction),
+    // and that can arrive while a read is in flight. The busy flag already
+    // serializes speak() calls; this only guards the swap itself.
+    player: RwLock<Player>,
     busy: AtomicBool,
-    speed: f32,
+    // f32 bits. Speed is a per-call argument to Player::speak, so it can
+    // change between utterances with no reconstruction.
+    speed: AtomicU32,
 }
 
 impl App {
     pub fn new(player: Player, speed: f32) -> Self {
         Self {
-            player,
+            player: RwLock::new(player),
             busy: AtomicBool::new(false),
-            speed,
+            speed: AtomicU32::new(crate::settings::Settings::clamp_speed(speed).to_bits()),
         }
+    }
+
+    /// Current speed, clamped at construction and at every `set_speed`.
+    pub fn speed(&self) -> f32 {
+        f32::from_bits(self.speed.load(Ordering::Relaxed))
+    }
+
+    /// Updates the speed used by the *next* `speak()` call. Takes effect
+    /// immediately for any read/selection started after this returns; an
+    /// utterance already in flight keeps the speed it was called with,
+    /// since `speed` is captured as a plain argument at the top of
+    /// `actions::read_region`/`speak_selection`, not re-read mid-sentence.
+    /// Clamped here too, not only in `Settings` — this is a second entry
+    /// point (the IPC command also clamps before saving, but `App` must
+    /// not trust that as its only guard).
+    pub fn set_speed(&self, v: f32) {
+        self.speed.store(
+            crate::settings::Settings::clamp_speed(v).to_bits(),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Replaces the engine-bearing `Player`. Blocks until any in-flight
+    /// read releases the read lock, so an utterance already speaking is
+    /// never cut off mid-sentence by a voice change — it finishes on the
+    /// old `Player`, and only the next `speak()` call sees the new one.
+    pub fn swap_player(&self, player: Player) {
+        *self.player.write().unwrap() = player;
     }
 
     /// Stops whatever is currently speaking. Safe to call at any time,
     /// including when nothing is speaking.
+    ///
+    /// A read lock, like the speak calls below — `stop()` only touches
+    /// atomics shared via the `Player`'s internal `Arc`s, so it never
+    /// needs exclusive access, and taking a plain read lock means Stop
+    /// stays responsive (non-blocking against other readers) rather than
+    /// queueing behind a pending voice-swap write lock.
     pub fn stop(&self) {
-        self.player.stop();
+        self.player.read().unwrap().stop();
     }
 
     /// Runs the region flow (see `actions::read_region`), guarded so a
@@ -58,7 +112,10 @@ impl App {
         selector: &dyn RegionSelector,
         ocr: &dyn OcrEngine,
     ) -> Result<Option<actions::Outcome>> {
-        self.guarded(|| actions::read_region(selector, ocr, &self.player, self.speed))
+        self.guarded(|| {
+            let player = self.player.read().unwrap();
+            actions::read_region(selector, ocr, &player, self.speed())
+        })
     }
 
     /// Runs the selection flow (see `actions::speak_selection`), guarded
@@ -70,8 +127,11 @@ impl App {
     /// Returns `Ok(false)` when skipped because the player was already
     /// busy, `Ok(true)` when it ran to completion.
     pub fn speak_selection(&self, text: &str) -> Result<bool> {
-        self.guarded(|| actions::speak_selection(text, &self.player, self.speed))
-            .map(|ran| ran.is_some())
+        self.guarded(|| {
+            let player = self.player.read().unwrap();
+            actions::speak_selection(text, &player, self.speed())
+        })
+        .map(|ran| ran.is_some())
     }
 
     /// Runs `f` unless a call is already in flight, in which case it is

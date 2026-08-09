@@ -1,9 +1,21 @@
 import AppKit
 
-// Aloud menubar template icon v2 — redesign per the owner's spec:
-// "A square, with a cross (crosshair) on the upper-left corner —
-// representing the area-selection tool — the letter A inside the square,
-// and a small volume/speaker icon at the bottom-right corner."
+// HAND-RUN GENERATOR — not invoked by the build. make-app.sh, build.rs and
+// Cargo.toml never call this file. Run it manually to regenerate the PNG:
+//   swift icons/make_tray_icon.swift icons/tray.png
+// The output is committed (icons/tray.png) and compiled into the binary via
+// include_bytes! in src/bin/aloud.rs, so a PNG change requires a rebuild to
+// take effect — this script alone changes nothing at runtime.
+//
+// Aloud menubar template icon v3 — the owner's original spec was "a square,
+// with a cross (crosshair) on the upper-left corner — representing the
+// area-selection tool — the letter A inside the square, and a small
+// volume/speaker icon at the bottom-right corner." At 22pt menubar size only
+// the square and the A read; the crosshair, drawn at (6, 38) with 6pt arms,
+// straddled the square's own top-left corner at (4, 4, 36, 36) and fused
+// into it as a thicker stroke — weight without meaning. Dropped here.
+// The full four-element concept is still correct for a 512px Finder/DMG
+// icon, where every element has room.
 //
 // Drawn directly into a 44x44-*pixel* NSBitmapImageRep (not via
 // NSImage.lockFocus, which renders at the screen's backing scale factor
@@ -51,34 +63,17 @@ NSColor.black.setFill()
 NSColor.black.setStroke()
 
 // --- 1. The square: doubles as the spec's literal "square" and as the
-// selection-marquee frame the crosshair sits on. Stroked, not filled, so
-// the letter A can live inside it without a solid black backdrop.
+// selection-marquee frame. Stroked, not filled, so the letter A can live
+// inside it without a solid black backdrop.
 let squareRect = NSRect(x: 4, y: 4, width: 36, height: 36)
 let square = NSBezierPath(rect: squareRect)
 square.lineWidth = 3.0
 square.stroke()
 
-// --- 2. Crosshair, snapped to the square's upper-left corner —
-// represents the area-selection tool's cursor.
-func crossAt(_ center: NSPoint, arm: CGFloat, lineWidth: CGFloat) {
-    let h = NSBezierPath()
-    h.move(to: NSPoint(x: center.x - arm, y: center.y))
-    h.line(to: NSPoint(x: center.x + arm, y: center.y))
-    h.lineWidth = lineWidth
-    h.lineCapStyle = .round
-    h.stroke()
-
-    let v = NSBezierPath()
-    v.move(to: NSPoint(x: center.x, y: center.y - arm))
-    v.line(to: NSPoint(x: center.x, y: center.y + arm))
-    v.lineWidth = lineWidth
-    v.lineCapStyle = .round
-    v.stroke()
-}
-crossAt(NSPoint(x: 6, y: 38), arm: 6, lineWidth: 2.6)
-
-// --- 3. The letter "A", bold, centered in the square.
-let font = NSFont.boldSystemFont(ofSize: 21)
+// --- 2. The letter "A", bold, centered in the square. One point larger
+// than the previous pass now that the top-left corner is quiet (no more
+// crosshair competing for attention there).
+let font = NSFont.boldSystemFont(ofSize: 22)
 let attrs: [NSAttributedString.Key: Any] = [
     .font: font,
     .foregroundColor: NSColor.black,
@@ -91,13 +86,12 @@ let letterOrigin = NSPoint(
 )
 letter.draw(at: letterOrigin)
 
-// --- 4. Small speaker glyph, straddling the square's bottom-right
-// corner (mirroring how the crosshair straddles the top-left corner) —
-// box + cone, no wave arcs, kept minimal so it reads as a distinct small
-// mark, not mush, at 22pt. Two earlier passes tucked it entirely inside
-// the corner, where it fused visually with the frame stroke and vanished
-// at native 44px; pulling it out to overlap/cross the corner (like the
-// crosshair does) isolates it against transparency instead.
+// --- 3. Small speaker glyph, straddling the square's bottom-right
+// corner — box + cone, no wave arcs, kept minimal so it reads as a
+// distinct small mark, not mush, at 22pt. Two earlier passes tucked it
+// entirely inside the corner, where it fused visually with the frame
+// stroke and vanished at native 44px; pulling it out to overlap/cross
+// the corner isolates it against transparency instead.
 let box = NSBezierPath()
 box.move(to: NSPoint(x: 33, y: 2))
 box.line(to: NSPoint(x: 37, y: 2))
