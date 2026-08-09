@@ -106,12 +106,35 @@ if ! /usr/bin/plutil -extract NSServices xml1 -o - "$PLIST" >/dev/null 2>&1; the
     exit 1
 fi
 
-# --- Ad-hoc codesign ---------------------------------------------------------
+# --- Codesign ----------------------------------------------------------------
+#
+# Prefer a stable self-signed identity over ad-hoc. This is not about Gatekeeper
+# — it is about TCC. macOS binds permission grants (Screen Recording) to the
+# app's designated requirement. Ad-hoc signing has no certificate, so the DR
+# falls back to the binary's cdhash, and EVERY rebuild produces a new hash and
+# silently invalidates the grant while System Settings still shows the app as
+# enabled. That cost us most of a debugging session.
+#
+# With a self-signed cert the DR becomes:
+#   identifier "com.andriileso.aloud" and certificate leaf = H"<cert hash>"
+# which is stable across rebuilds.
+#
+# Create the identity once: Keychain Access -> Certificate Assistant ->
+# Create a Certificate -> Self Signed Root, Code Signing, named as below.
+# It does not need to be trusted; codesign accepts an untrusted self-signed
+# cert. If it is absent we fall back to ad-hoc so the build still works.
 # Not for Gatekeeper — it gives the app a stable identity so macOS's
 # permission grants (Screen Recording) persist across rebuilds instead of
 # re-prompting every time the binary's hash changes.
-echo "==> ad-hoc codesigning $APP"
-codesign --force --deep --sign - "$APP"
+SIGN_IDENTITY="${ALOUD_SIGN_IDENTITY:-Aloud Dev}"
+if security find-certificate -c "$SIGN_IDENTITY" >/dev/null 2>&1; then
+  echo "==> codesigning $APP with \"$SIGN_IDENTITY\" (stable identity; TCC grants survive rebuilds)"
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+else
+  echo "==> WARNING: signing identity \"$SIGN_IDENTITY\" not found — falling back to ad-hoc."
+  echo "    Screen Recording permission will need re-granting after every rebuild."
+  codesign --force --deep --sign - "$APP"
+fi
 codesign -dv "$APP"
 
 echo "==> disk after:"

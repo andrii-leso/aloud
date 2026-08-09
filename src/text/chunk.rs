@@ -8,7 +8,18 @@ const ABBREVIATIONS: &[&str] = &[
 /// sentence synthesizes in ~1.5s (warm engine), so 120 chars fits within
 /// the 2.0s hard constraint for time-to-first-audio, even accounting for
 /// cold starts and OS jitter.
-const MAX_CHUNK_CHARS: usize = 120;
+/// Cap for the FIRST chunk only. This exists purely to bound time-to-first-audio:
+/// measured on an M1 Air, ~95 characters synthesises in ~1.5s warm, so ~120 keeps the
+/// first word inside a roughly 2s budget.
+const FIRST_CHUNK_CHARS: usize = 120;
+
+/// Cap for every chunk after the first. Later chunks are synthesised while earlier
+/// audio is already playing, so they do not affect latency at all — capping them at
+/// FIRST_CHUNK_CHARS only chopped ordinary sentences mid-clause and produced an
+/// audible pause (reported 2026-08-09: a 125-char sentence split right before its
+/// last word). This bound exists only to keep a single buffer well under the
+/// player's 30s stall watchdog: ~300 chars is roughly 20s of speech at speed 1.0.
+const LATER_CHUNK_CHARS: usize = 300;
 
 fn ends_with_abbreviation(s: &str) -> bool {
     let trimmed = s.trim_end();
@@ -24,25 +35,25 @@ fn is_decimal_point(chars: &[char], idx: usize) -> bool {
 }
 
 /// Splits a long chunk at a natural break point within the budget.
-/// Searches the first MAX_CHUNK_CHARS chars for (in order):
+/// Searches the first budget chars for (in order):
 /// 1. Last comma, semicolon, or colon (pause point)
 /// 2. Last whitespace (word boundary)
-/// 3. Hard cut at MAX_CHUNK_CHARS (single unbroken token)
+/// 3. Hard cut at budget (single unbroken token)
 ///
 /// Termination proof: Each invocation reduces the remaining length.
 /// - Rules 1-2: We find a separator within the budget and split before it,
-///   leaving a strictly shorter tail (bounded by MAX_CHUNK_CHARS at most).
+///   leaving a strictly shorter tail (bounded by budget at most).
 /// - Rule 3: We cut exactly 120 chars, leaving a non-empty tail for the
 ///   next iteration (the original chunk must be > 120 to enter this function).
 /// Thus the algorithm cannot hang; every iteration makes progress.
-fn split_long_chunk(chunk: &str) -> Vec<String> {
+fn split_long_chunk(chunk: &str, budget: usize) -> Vec<String> {
     let chars: Vec<char> = chunk.chars().collect();
     let mut out = Vec::new();
 
     let mut pos = 0;
     while pos < chars.len() {
         let remaining = chars.len() - pos;
-        if remaining <= MAX_CHUNK_CHARS {
+        if remaining <= budget {
             // The tail fits in the budget; emit as-is.
             let tail: String = chars[pos..].iter().collect();
             let trimmed = tail.trim();
@@ -53,7 +64,7 @@ fn split_long_chunk(chunk: &str) -> Vec<String> {
         }
 
         // Too long. Search within the budget for a break point.
-        let budget_end = (pos + MAX_CHUNK_CHARS).min(chars.len());
+        let budget_end = (pos + budget).min(chars.len());
         let window = &chars[pos..budget_end];
 
         // Try to find the last comma, semicolon, or colon (rule 1).
@@ -92,7 +103,7 @@ fn split_long_chunk(chunk: &str) -> Vec<String> {
         }
 
         // Single unbroken token longer than budget; hard cut (rule 3).
-        let cut = pos + MAX_CHUNK_CHARS;
+        let cut = pos + budget;
         let chunk_text: String = chars[pos..cut].iter().collect();
         let trimmed = chunk_text.trim();
         if !trimmed.is_empty() {
@@ -144,14 +155,20 @@ pub fn split_sentences(text: &str) -> Vec<String> {
         }
     }
 
-    // Post-process: split any chunk longer than MAX_CHUNK_CHARS.
-    let mut final_out = Vec::new();
+    // Post-process. The first chunk gets the tight latency cap; everything after it
+    // gets the generous one, because only the first chunk is on the critical path to
+    // hearing the first word.
+    let mut final_out: Vec<String> = Vec::new();
     for chunk in out {
-        if chunk.chars().count() <= MAX_CHUNK_CHARS {
+        let budget = if final_out.is_empty() {
+            FIRST_CHUNK_CHARS
+        } else {
+            LATER_CHUNK_CHARS
+        };
+        if chunk.chars().count() <= budget {
             final_out.push(chunk);
         } else {
-            let split_chunks = split_long_chunk(&chunk);
-            final_out.extend(split_chunks);
+            final_out.extend(split_long_chunk(&chunk, budget));
         }
     }
 
@@ -161,6 +178,42 @@ pub fn split_sentences(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::split_sentences;
+
+    /// Reported by Andrii 2026-08-09: the spoken output paused before the final
+    /// word of this sentence, where there is no punctuation. Cause: the sentence
+    /// is 125 chars and the old single 120-char cap applied to EVERY chunk, so the
+    /// valve cut it at char 115 — immediately before "watching". Only the first
+    /// chunk needs a tight cap; later chunks are synthesised while earlier audio
+    /// plays. A sentence of this length must now survive whole when it is not first.
+    #[test]
+    fn an_ordinary_long_sentence_is_not_chopped_when_it_is_not_first() {
+        let lead = "Short opener.";
+        let long = "Windows will have its own equivalents and I'd rather find them \
+in an afternoon than in a debugging session with you watching.";
+        let long = long.replace('\n', "");
+        let chunks = split_sentences(&format!("{lead} {long}"));
+        assert!(
+            chunks.iter().any(|c| c.contains("with you watching.")),
+            "the sentence was split mid-clause: {chunks:?}"
+        );
+        assert_eq!(
+            chunks.len(),
+            2,
+            "expected exactly opener + whole sentence: {chunks:?}"
+        );
+    }
+
+    /// The latency cap must still bind the FIRST chunk, or time-to-first-audio regresses.
+    #[test]
+    fn the_first_chunk_still_respects_the_tight_latency_cap() {
+        let long_first = "a ".repeat(120);
+        let chunks = split_sentences(&long_first);
+        assert!(
+            chunks[0].chars().count() <= 120,
+            "first chunk must stay within the latency budget, got {}",
+            chunks[0].chars().count()
+        );
+    }
 
     // Original six tests — must still pass unchanged.
 
