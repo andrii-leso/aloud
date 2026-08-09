@@ -14,6 +14,10 @@ Two ways to trigger it:
   menu), or press **Cmd+Shift+A**. This route never touches Accessibility
   or the clipboard — see "Permissions" below for why.
 
+Both the region shortcut and the voice/speed the app reads with are
+configurable from the tray's **Settings…** window — see "Settings"
+below.
+
 Cmd+Shift+A is Aloud's default shortcut for the Service, shipped in
 `Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
 Settings → Keyboard → Keyboard Shortcuts → Services**, under the Text
@@ -23,9 +27,9 @@ precedence while Aloud is running, so in those apps Cmd+Shift+A triggers
 Read Aloud instead of the app's own binding; rebind one of the two in
 System Settings if that collides with your workflow.
 
-Aloud lives in the menubar only: no Dock icon, no window. Use the tray
-icon to trigger a region read, stop whatever is currently speaking, or
-quit.
+Aloud lives in the menubar only: no Dock icon, and no window until you
+open one yourself. Use the tray icon to trigger a region read, stop
+whatever is currently speaking, open **Settings…**, or quit.
 
 ## Permissions
 
@@ -58,6 +62,47 @@ own identity, not Aloud's, so they land under the wrong app in
 Notification settings and can be silently suppressed there with no
 connection back to Aloud. See `src/bin/aloud.rs`.) A deliberate `Escape`
 cancel stays silent on purpose — that's not a failure.
+
+## Settings
+
+Open the settings window from the tray's **Settings…** item.
+
+**Region shortcut.** The region hotkey (`Cmd+Shift+R` by default) is
+rebindable there: click the shortcut button, press a new chord, and
+Aloud saves it right away — then asks you to press that same chord once
+more. That second press isn't a formality: macOS has no API to report
+whether a chord is already owned by another app. `register()` succeeds
+either way, and if something else already has it, your press is
+silently shadowed with no error and no way to ask the OS about it.
+Pressing it again and watching for Aloud to actually respond is an
+empirical confirmation, not an availability check — a check isn't
+possible here. If nothing happens within 10 seconds, the shortcut is
+probably reserved elsewhere; try a different one.
+
+**Selection shortcut.** `Cmd+Shift+A` is not rebindable in the settings
+window, because it isn't Aloud's to rebind — it's a macOS Service
+shortcut (see "Permissions" above), and it already works with no setup:
+`Info.plist` ships it as the Service's `NSKeyEquivalent`. The tray's
+**Change Selection Shortcut…** item opens **System Settings → Keyboard →
+Keyboard Shortcuts → Services** directly, where it (or the conflicts
+described above) can be changed.
+
+**Voice and speed.** Pick between the two shipped voices, **F5** (female,
+default) and **M5** (male), and adjust speed from **0.7×** to **2.0×**.
+Both apply to the running engine immediately, no relaunch needed. The
+0.7× floor exists because below roughly 0.27× a single chunk of speech
+would exceed 30 seconds of audio and false-positive the player's stall
+watchdog.
+
+Settings persist at
+`~/Library/Application Support/com.andriileso.aloud/settings.json` —
+inspect or delete that file to reset to defaults.
+
+The settings window is implemented and covered by unit/characterisation
+tests at the logic layer, but its interactive behaviour — the shortcut
+recorder, the confirmation flow, live voice/speed switching — has not
+been exercised end-to-end by anyone clicking through the actual window.
+Treat it as built, not yet hands-on verified.
 
 ## Building
 
