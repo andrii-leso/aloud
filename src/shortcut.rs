@@ -57,8 +57,8 @@ impl fmt::Display for ChordError {
 /// The five keys `global-hotkey` routes into `start_watching_media_keys`,
 /// which is the only path in the whole dependency chain that calls
 /// `CGEventTapCreate` — and therefore the only one that can produce an
-/// Accessibility / Input Monitoring prompt. Rejecting them here means the
-/// tap is never created.
+/// Accessibility / Input Monitoring prompt. Rejecting them means the tap
+/// is never created.
 const MEDIA_KEYS: [&str; 5] = [
     "MediaPlayPause",
     "MediaTrackNext",
@@ -66,6 +66,32 @@ const MEDIA_KEYS: [&str; 5] = [
     "MediaFastForward",
     "MediaRewind",
 ];
+
+/// True if `accel` — an already-built *accelerator string*, the form that
+/// is persisted and handed to `global_shortcut().register()` — names one
+/// of `MEDIA_KEYS`.
+///
+/// `Chord::to_accelerator` screens the same list, but that guards the IPC
+/// path only: a chord recorded in the settings window. A hand-edited
+/// `settings.json` reaches `register()` without ever passing through a
+/// `Chord`, and `"CmdOrCtrl+MediaPlayPause"` there is enough to create
+/// the session-level event tap — which is the one thing this app must
+/// never do. So both entry points screen with this, and
+/// `Settings::normalize` refuses to let such a value survive a load or a
+/// save in the first place.
+///
+/// Matching is case-insensitive and accepts `MediaTrackPrev`, because the
+/// plugin's own parser is and does: `global-hotkey-0.8.0`
+/// `hotkey.rs::parse_key` matches on `key.to_uppercase()`, with
+/// `"MEDIATRACKPREV" | "MEDIATRACKPREVIOUS" => MediaTrackPrevious`. An
+/// exact-case `MEDIA_KEYS.contains()` would let both spellings straight
+/// through to the tap.
+pub fn is_media_accelerator(accel: &str) -> bool {
+    accel.split('+').any(|token| {
+        let token = token.trim().to_uppercase();
+        token == "MEDIATRACKPREV" || MEDIA_KEYS.iter().any(|k| k.to_uppercase() == token)
+    })
+}
 
 /// Documented system shortcuts (Apple support 102650). Registering any of
 /// these succeeds and then does nothing, so this list is the only place

@@ -62,6 +62,60 @@ fn speed_is_clamped_on_load_and_on_save() {
 
     fs::write(d.join("settings.json"), br#"{"speed":0.01}"#).unwrap();
     assert_eq!(Settings::load(&d).speed, 0.7);
+
+    // save()'s own normalize(), asserted on the raw file rather than
+    // through load(): load() clamps too, so a load-based assertion passes
+    // even if save() wrote the out-of-range value straight to disk —
+    // which would leave the clamp on the write side untested and free to
+    // regress silently.
+    Settings {
+        speed: 9.0,
+        ..Settings::default()
+    }
+    .save(&d)
+    .unwrap();
+    let raw = fs::read_to_string(d.join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(written["speed"], 2.0, "save() must clamp before writing");
+}
+
+#[test]
+fn a_media_key_shortcut_in_a_hand_edited_file_does_not_survive_a_load() {
+    // The only path by which a media key could reach
+    // `global_shortcut().register()` — which routes into
+    // `start_watching_media_keys` -> `CGEventTapCreate`, the session-level
+    // tap that makes macOS demand Accessibility / Input Monitoring. Aloud
+    // never asks for that, so this value cannot be allowed to persist.
+    // Case is irrelevant: the plugin's parser uppercases before matching.
+    for raw in [
+        br#"{"region_shortcut":"CmdOrCtrl+MediaPlayPause"}"#.to_vec(),
+        br#"{"region_shortcut":"cmdorctrl+mediatrackprev"}"#.to_vec(),
+    ] {
+        let d = tmpdir("mediakey");
+        fs::write(d.join("settings.json"), &raw).unwrap();
+        assert_eq!(
+            Settings::load(&d).region_shortcut,
+            DEFAULT_SHORTCUT,
+            "a media key must be replaced by the default on load"
+        );
+    }
+}
+
+#[test]
+fn a_media_key_shortcut_is_not_written_back_out_by_a_save() {
+    // normalize() runs on save as well as load, so even an in-memory
+    // Settings carrying a media key cannot put one on disk for the next
+    // launch to read.
+    let d = tmpdir("mediakey-save");
+    Settings {
+        region_shortcut: "CmdOrCtrl+MediaPlayPause".into(),
+        ..Settings::default()
+    }
+    .save(&d)
+    .unwrap();
+    let raw = fs::read_to_string(d.join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(written["region_shortcut"], DEFAULT_SHORTCUT);
 }
 
 #[test]

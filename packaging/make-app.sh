@@ -19,7 +19,10 @@
 #
 # One command produces a runnable app: this script builds the release
 # `aloud` binary, runs helpers/macos-ocr/build.sh for the OCR helper, then
-# assembles and ad-hoc codesigns the bundle.
+# assembles the bundle and codesigns it with the self-signed "Aloud Dev"
+# identity. Explicitly NOT ad-hoc: a missing certificate is a hard build
+# failure, because an ad-hoc fallback silently invalidates the Screen
+# Recording grant on every rebuild — see the Codesign section below.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

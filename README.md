@@ -148,9 +148,10 @@ documentation for this OS and should not be relied on.)
 
 ## Debugging
 
-Aloud is a menubar app with no window and no attached terminal once
-launched via LaunchServices (double-click or `open`), so `eprintln!`
-output goes nowhere retrievable. Everything worth diagnosing — app
+Aloud is a menubar app with no console: launched via LaunchServices
+(double-click or `open`) it has no attached terminal, so `eprintln!`
+output goes nowhere retrievable — the settings window is a webview and
+shows none of it either. Everything worth diagnosing — app
 start, engine load, hotkey presses, each stage of a region capture
 (preflight, `screencapture` invocation and exit status, output-file
 presence/size, OCR text length, detected language, speak start/finish),

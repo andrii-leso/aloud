@@ -21,12 +21,31 @@ use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
-/// Matches `aloud-say`'s default (`src/bin/aloud_say.rs`). A voice picker
-/// is a Settings-window concern, not built in M3.
-const VOICE: &str = "F5";
-/// Matches `aloud-say`'s default. A speed control is a Settings-window /
-/// tray concern (see the design doc), not built in M3.
-const SPEED: f32 = 1.0;
+/// The engine and `App` constructor arguments that a loaded `Settings`
+/// implies.
+///
+/// This exists to be testable. The real wiring lives inside `setup()`,
+/// which cannot be reached without a live `tauri::App`, and until M4's
+/// final review nothing stood between "the saved voice and speed are
+/// applied at launch" and "they are silently ignored" except reading the
+/// code — which read fine while `setup()` in fact built the engine from a
+/// hardcoded `VOICE` const and `App` from a hardcoded `SPEED`. Both
+/// happened to equal the shipped defaults, so the app spoke F5 at 1.0x on
+/// every launch while `get_settings` kept returning the saved M5 at 1.5x
+/// and the settings window kept showing them. See `startup_config_tests`.
+struct StartupConfig<'a> {
+    voice: &'a str,
+    speed: f32,
+}
+
+impl<'a> StartupConfig<'a> {
+    fn from_settings(s: &'a Settings) -> Self {
+        Self {
+            voice: &s.voice,
+            speed: s.speed,
+        }
+    }
+}
 
 /// Menubar tray icon, embedded rather than loaded from a path at runtime —
 /// a path-based load can resolve differently once bundled inside the
@@ -220,6 +239,19 @@ fn apply_shortcut_with(
 ) -> Result<(), String> {
     use aloud::shortcut::Step;
 
+    // The one screen every path to `register()` passes through. The
+    // recorded-chord path is already screened by `Chord::to_accelerator`,
+    // but the startup path takes `settings.region_shortcut` verbatim, so a
+    // hand-edited settings.json could otherwise register a media key —
+    // which routes into `start_watching_media_keys` and creates a
+    // session-level `CGEventTapCreate` tap, the one thing that makes macOS
+    // demand Accessibility / Input Monitoring. `Settings::normalize`
+    // already strips such a value on load and save; this is the guard that
+    // does not depend on the value having come from `Settings` at all.
+    if aloud::shortcut::is_media_accelerator(new) {
+        return Err(aloud::shortcut::ChordError::MediaKey.to_string());
+    }
+
     let old = registered.lock().unwrap().clone();
     for step in aloud::shortcut::plan_apply(old.as_deref(), new) {
         match step {
@@ -332,8 +364,50 @@ struct SettingsView {
 /// from and is saved back to — set up once in `setup` from the one
 /// `Settings::load` call already made there, never loaded a second time.
 struct SettingsState {
+    /// Exactly what is (to be) on disk. `Settings::save` serializes the
+    /// WHOLE struct, so anything written here is persisted by the very
+    /// next save from any command — see `active_shortcut`.
     settings: Mutex<Settings>,
+    /// The region chord actually in force, which is what the settings
+    /// window displays. Normally identical to `settings.region_shortcut`;
+    /// it diverges when a persisted chord fails to register at launch and
+    /// the app falls back to the default *deliberately without persisting
+    /// it*, so a later launch can retry the saved one.
+    ///
+    /// That fallback used to be written into `settings` itself. Because
+    /// `set_voice` and `set_speed` both go through `persist`, which saves
+    /// the entire struct, nudging the speed slider once then wrote the
+    /// fallback over the user's saved chord — permanently, with no retry
+    /// ever. Keeping "what is persisted" and "what is active" in separate
+    /// fields is what makes that unrepresentable rather than merely
+    /// avoided.
+    ///
+    /// Not the same thing as `Runtime.registered_shortcut` either: that is
+    /// OS ground truth (and `None` when nothing at all is registered),
+    /// reachable only with an `AppHandle`, which the `get_settings`
+    /// command deliberately does not take (see `command_tests`).
+    active_shortcut: Mutex<String>,
     config_dir: std::path::PathBuf,
+}
+
+/// Mutates the persisted settings and writes them to disk. The single
+/// write path for `set_shortcut`/`set_voice`/`set_speed`.
+///
+/// `Settings::save` serializes the whole struct, so every field in
+/// `SettingsState.settings` is persisted by any one of these calls — which
+/// is exactly why the startup shortcut fallback writes `active_shortcut`
+/// instead of this (see `SettingsState`).
+fn persist<T>(state: &SettingsState, f: impl FnOnce(&mut Settings) -> T) -> Result<T, String> {
+    let mut s = state.settings.lock().unwrap();
+    let out = f(&mut s);
+    s.save(&state.config_dir).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// Records the chord now in force *without* persisting it. See
+/// `SettingsState::active_shortcut`.
+fn set_active_shortcut(state: &SettingsState, accel: &str) {
+    *state.active_shortcut.lock().unwrap() = accel.to_string();
 }
 
 // Every `#[tauri::command]` fn below is intentionally NOT `pub`: the macro
@@ -348,10 +422,15 @@ struct SettingsState {
 // lives in this same file, and matches every other fn in it.
 #[tauri::command]
 fn get_settings(state: State<'_, SettingsState>) -> SettingsView {
+    // The ACTIVE chord, not the persisted one: after a startup fallback
+    // those differ, and the window must describe what the user's keyboard
+    // will actually do. Taken (and released) before the `settings` lock so
+    // the two are never held nested.
+    let active = state.active_shortcut.lock().unwrap().clone();
     let s = state.settings.lock().unwrap();
     SettingsView {
-        region_shortcut: s.region_shortcut.clone(),
-        region_shortcut_pretty: pretty_accelerator(&s.region_shortcut),
+        region_shortcut_pretty: pretty_accelerator(&active),
+        region_shortcut: active,
         voice: s.voice.clone(),
         speed: s.speed,
     }
@@ -374,16 +453,27 @@ fn set_shortcut(
     // persisted value) — see `apply_shortcut`'s doc comment for the bug
     // that conflating them caused.
     let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
-    apply_shortcut(&app, &rt, &accel)?;
+    if let Err(e) = apply_shortcut(&app, &rt, &accel) {
+        // Whichever way it failed, `registered_shortcut` now holds OS
+        // ground truth: the old chord if the rollback worked, `None` if it
+        // did not. Re-sync the tray from that before returning — returning
+        // early used to skip `refresh_tray_labels` entirely, so a failed
+        // rollback left the menu advertising a chord that is no longer
+        // registered. An empty accelerator renders as an empty pretty
+        // string (see `pretty_accelerator`'s tests), which is honest here:
+        // there is nothing to show.
+        let active = rt
+            .registered_shortcut
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_default();
+        refresh_tray_labels(&app, &active);
+        return Err(e);
+    }
 
-    {
-        let mut s = state.settings.lock().unwrap();
-        s.region_shortcut = accel.clone();
-        s.save(&state.config_dir).map_err(|e| e.to_string())?;
-    } // guard dropped here — refresh_tray_labels below takes a different
-      // lock (Runtime, not SettingsState), so this was never a deadlock,
-      // but there is no reason to hold the settings lock across an OS
-      // (MenuItem::set_text) call either.
+    persist(&state, |s| s.region_shortcut = accel.clone())?;
+    set_active_shortcut(&state, &accel);
     aloud::log_line!("settings: region shortcut is now {accel}");
 
     refresh_tray_labels(&app, &accel);
@@ -402,18 +492,38 @@ fn refresh_tray_labels(app: &tauri::AppHandle, region_shortcut: &str) {
     ));
 }
 
+/// Validates and saves the requested voice, then starts the engine
+/// rebuild on a background thread.
+///
+/// `Ok(())` means *saved and started*, nothing more — the ~1.4s rebuild
+/// can still fail after this returns. Its real outcome arrives at the
+/// settings page as an `aloud://voice-swapped` event; see
+/// `spawn_voice_swap`.
 #[tauri::command]
 fn set_voice(app: AppHandle, state: State<'_, SettingsState>, voice: String) -> Result<(), String> {
     if !VOICES.contains(&voice.as_str()) {
         return Err(format!("unknown voice {voice}"));
     }
-    {
-        let mut s = state.settings.lock().unwrap();
-        s.voice = voice.clone();
-        s.save(&state.config_dir).map_err(|e| e.to_string())?;
-    }
+    persist(&state, |s| s.voice = voice.clone())?;
     spawn_voice_swap(&app, voice);
     Ok(())
+}
+
+/// What `spawn_voice_swap` reports back to the settings page once the
+/// rebuild has actually finished. `error` is `None` on success.
+#[derive(Clone, serde::Serialize)]
+struct VoiceSwapResult {
+    voice: String,
+    error: Option<String>,
+}
+
+/// Delivers a `VoiceSwapResult` to the settings window if it is still
+/// open. Same pattern as `aloud://probe-fired`: a closed window simply
+/// misses it, and a failure is still carried by the tray status/tooltip.
+fn emit_voice_swap_result(app: &tauri::AppHandle, result: VoiceSwapResult) {
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.emit("aloud://voice-swapped", result);
+    }
 }
 
 /// Rebuilds the TTS engine on the requested voice and swaps it in.
@@ -421,8 +531,16 @@ fn set_voice(app: AppHandle, state: State<'_, SettingsState>, voice: String) -> 
 /// Off the main thread: `SupertonicEngine::spawn` loads the voice style
 /// and stands up a worker thread, which takes on the order of a second —
 /// running it inline on the IPC call would freeze the settings page's
-/// event loop for that long. The settings page shows "Switching voice…"
-/// until this reports back.
+/// event loop for that long.
+///
+/// Because of that, `set_voice` returning `Ok` proves only that the choice
+/// was saved. The page shows "Switching voice…" from the moment it invokes
+/// `set_voice` until the `aloud://voice-swapped` event emitted below tells
+/// it what actually happened — the page used to show "Ready." on
+/// `set_voice`'s return instead, which was ~1.4s early on success and
+/// simply false when the rebuild failed (a partial `~/.cache/supertonic3`
+/// is enough), leaving green "Ready.", a saved voice, an unchanged engine,
+/// and a tray tooltip nobody is looking at as the only signal.
 ///
 /// Reuses `rt.sink`: only the engine differs between voices, and the
 /// swap must not open a second audio device (or worse, leave the old one
@@ -440,10 +558,19 @@ fn spawn_voice_swap(app: &tauri::AppHandle, voice: String) {
                 // `App::swap_player` (src/app/mod.rs).
                 rt.app.swap_player(player);
                 aloud::log_line!("voice: switched to {voice}");
+                emit_voice_swap_result(&app, VoiceSwapResult { voice, error: None });
             }
             Err(e) => {
                 aloud::log_line!("voice: could not switch to {voice}: {e:#}");
-                set_error_status(&rt, &format!("Could not load the {voice} voice."));
+                let message = format!("Could not load the {voice} voice.");
+                set_error_status(&rt, &message);
+                emit_voice_swap_result(
+                    &app,
+                    VoiceSwapResult {
+                        voice,
+                        error: Some(message),
+                    },
+                );
             }
         }
     });
@@ -452,11 +579,7 @@ fn spawn_voice_swap(app: &tauri::AppHandle, voice: String) {
 #[tauri::command]
 fn set_speed(app: AppHandle, state: State<'_, SettingsState>, speed: f32) -> Result<f32, String> {
     let clamped = Settings::clamp_speed(speed);
-    {
-        let mut s = state.settings.lock().unwrap();
-        s.speed = clamped;
-        s.save(&state.config_dir).map_err(|e| e.to_string())?;
-    }
+    persist(&state, |s| s.speed = clamped)?;
     set_live_speed(&app, clamped);
     Ok(clamped)
 }
@@ -623,9 +746,13 @@ fn main() {
             let config_dir = app.path().app_config_dir()?;
             let settings = Settings::load(&config_dir);
 
+            // The saved voice and speed, not a hardcoded default — see
+            // `StartupConfig` for the bug this closes.
+            let startup = StartupConfig::from_settings(&settings);
+
             // Paid once, here: the Supertonic model load is ~1.4s and must
             // happen at launch, not on the first hotkey press.
-            let engine = Arc::new(SupertonicEngine::spawn(VOICE)?);
+            let engine = Arc::new(SupertonicEngine::spawn(startup.voice)?);
             aloud::log_line!("engine load complete");
             // Typed as the trait object up front so the same handle can be
             // both handed to `Player::new` and retained on `Runtime` — a
@@ -633,7 +760,7 @@ fn main() {
             // opening a second audio device.
             let sink: Arc<dyn AudioSink> = Arc::new(RodioSink::new()?);
             let player = Player::new(engine, Arc::clone(&sink));
-            let core = App::new(player, SPEED);
+            let core = App::new(player, startup.speed);
 
             let status_item = MenuItem::with_id(app, "status", STATUS_READY, false, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
@@ -739,6 +866,7 @@ fn main() {
             });
             app.manage(runtime);
             app.manage(SettingsState {
+                active_shortcut: Mutex::new(settings.region_shortcut.clone()),
                 settings: Mutex::new(settings.clone()),
                 config_dir,
             });
@@ -792,31 +920,33 @@ fn main() {
                                         "hotkey: fell back to {}",
                                         aloud::settings::DEFAULT_SHORTCUT
                                     );
-                                    // In-memory only — deliberately NOT
-                                    // persisted. The OS now has the
-                                    // default registered, not `wanted`,
-                                    // so the tray label (built above from
-                                    // the pre-fallback `settings`) and
-                                    // the in-state `Settings` both need
-                                    // to agree with reality, the same way
-                                    // `set_shortcut` keeps them in sync
-                                    // for an interactive rebind. But this
-                                    // failure is presumed transient (e.g.
-                                    // another app briefly holding the
-                                    // same chord) rather than a permanent
-                                    // rejection — `set_shortcut` already
-                                    // screens out permanent rejections
-                                    // before anything is ever saved — so
-                                    // `wanted` must survive on disk for a
-                                    // later launch to retry it, not be
-                                    // overwritten by the fallback.
-                                    {
-                                        let settings_state = app.state::<SettingsState>();
-                                        let mut guard =
-                                            settings_state.settings.lock().unwrap();
-                                        guard.region_shortcut =
-                                            aloud::settings::DEFAULT_SHORTCUT.to_string();
-                                    }
+                                    // The OS now has the default
+                                    // registered, not `wanted`, so the
+                                    // tray label (built above from the
+                                    // pre-fallback `settings`) and the
+                                    // settings window both need to agree
+                                    // with reality. But this failure is
+                                    // presumed transient (e.g. another app
+                                    // briefly holding the same chord)
+                                    // rather than a permanent rejection —
+                                    // `set_shortcut` already screens out
+                                    // permanent rejections before anything
+                                    // is ever saved — so `wanted` must
+                                    // survive ON DISK for a later launch
+                                    // to retry it.
+                                    //
+                                    // Hence `active_shortcut`, never
+                                    // `settings`: writing the fallback
+                                    // into the persisted struct (as this
+                                    // did) meant the next `set_voice` or
+                                    // `set_speed` — both of which save the
+                                    // whole struct — silently overwrote
+                                    // the user's saved chord with the
+                                    // default, killing the retry forever.
+                                    set_active_shortcut(
+                                        &app.state::<SettingsState>(),
+                                        aloud::settings::DEFAULT_SHORTCUT,
+                                    );
                                     refresh_tray_labels(
                                         &handle,
                                         aloud::settings::DEFAULT_SHORTCUT,
@@ -1084,28 +1214,28 @@ mod command_tests {
         }
     }
 
-    #[test]
-    fn get_settings_returns_the_expected_shape() {
-        // A throwaway config dir under the OS temp dir — never the real
-        // `~/Library/Application Support/com.andriileso.aloud/`, so this
-        // test can never touch the owner's actual `settings.json`.
-        let dir = std::env::temp_dir().join(format!(
-            "aloud-command-tests-get-{}-{}",
+    /// A throwaway config dir under the OS temp dir — never the real
+    /// `~/Library/Application Support/com.andriileso.aloud/`, so these
+    /// tests can never touch the owner's actual `settings.json`.
+    fn throwaway_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "aloud-command-tests-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        ));
+        ))
+    }
 
+    /// Builds the mock app around `state` and invokes `get_settings`
+    /// through the real IPC pipeline, returning the deserialized view.
+    fn invoke_get_settings(state: SettingsState) -> serde_json::Value {
         let app = mock_builder()
             .invoke_handler(tauri::generate_handler![get_settings])
             .build(mock_context(noop_assets()))
             .expect("failed to build mock app");
-        app.manage(SettingsState {
-            settings: Mutex::new(Settings::default()),
-            config_dir: dir.clone(),
-        });
+        app.manage(state);
         // The noop context declares no windows (see the doc comment
         // above for why it's noop rather than this crate's real
         // context), so build one ad hoc rather than fetching the real
@@ -1116,12 +1246,155 @@ mod command_tests {
 
         let res = get_ipc_response(&webview, request("get_settings", serde_json::json!({})))
             .expect("get_settings should succeed under the real capabilities ACL");
-        let value: serde_json::Value = res.deserialize().unwrap();
+        res.deserialize().unwrap()
+    }
+
+    #[test]
+    fn get_settings_returns_the_expected_shape() {
+        let dir = throwaway_dir("get");
+        let value = invoke_get_settings(SettingsState {
+            settings: Mutex::new(Settings::default()),
+            active_shortcut: Mutex::new(Settings::default().region_shortcut),
+            config_dir: dir.clone(),
+        });
 
         assert_eq!(value["region_shortcut"], "CmdOrCtrl+Shift+R");
         assert_eq!(value["region_shortcut_pretty"], "⌘⇧R");
         assert_eq!(value["voice"], "F5");
         assert_eq!(value["speed"], 1.0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn get_settings_reports_the_active_chord_not_the_persisted_one() {
+        // The post-startup-fallback state: "Alt+Shift+E" is what is saved
+        // and what a later launch will retry, but the default is what the
+        // OS actually has right now. The window must show what pressing a
+        // key will really do — showing the saved-but-dead chord is how a
+        // settings page becomes a lie about its own app.
+        let dir = throwaway_dir("active");
+        let value = invoke_get_settings(SettingsState {
+            settings: Mutex::new(Settings {
+                region_shortcut: "Alt+Shift+E".into(),
+                ..Settings::default()
+            }),
+            active_shortcut: Mutex::new(aloud::settings::DEFAULT_SHORTCUT.to_string()),
+            config_dir: dir.clone(),
+        });
+
+        assert_eq!(value["region_shortcut"], "CmdOrCtrl+Shift+R");
+        assert_eq!(value["region_shortcut_pretty"], "⌘⇧R");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Regression coverage for the M4 whole-branch bug: `Settings::load` ran
+/// at startup, but the engine was built from a hardcoded `VOICE` const and
+/// `App` from a hardcoded `SPEED`, so a saved voice and speed were applied
+/// live, persisted, reported back by `get_settings` — and then silently
+/// dropped on the next launch. Both consts happened to equal the shipped
+/// defaults, which is the only reason nothing looked wrong.
+///
+/// `setup()` itself needs a live `tauri::App`, so the mapping it now uses
+/// is what is asserted here; `setup()` reads `startup.voice`/`startup.speed`
+/// and nothing else when constructing the engine and `App`.
+#[cfg(test)]
+mod startup_config_tests {
+    use super::StartupConfig;
+    use aloud::settings::{Settings, DEFAULT_SPEED, DEFAULT_VOICE};
+
+    #[test]
+    fn a_saved_non_default_voice_and_speed_reach_construction() {
+        let settings = Settings {
+            region_shortcut: aloud::settings::DEFAULT_SHORTCUT.to_string(),
+            voice: "M5".into(),
+            speed: 1.5,
+        };
+        // Both deliberately differ from the defaults: an implementation
+        // that ignored `settings` and returned the hardcoded defaults —
+        // exactly the bug — would still satisfy an assertion written
+        // against a default-valued `Settings`.
+        assert_ne!(settings.voice, DEFAULT_VOICE);
+        assert_ne!(settings.speed, DEFAULT_SPEED);
+
+        let c = StartupConfig::from_settings(&settings);
+        assert_eq!(
+            c.voice, "M5",
+            "the engine must be built on the saved voice, not the default"
+        );
+        assert_eq!(
+            c.speed, 1.5,
+            "App must be constructed with the saved speed, not the default"
+        );
+    }
+
+    #[test]
+    fn a_default_settings_still_produces_the_shipped_defaults() {
+        let settings = Settings::default();
+        let c = StartupConfig::from_settings(&settings);
+        assert_eq!(c.voice, DEFAULT_VOICE);
+        assert_eq!(c.speed, DEFAULT_SPEED);
+    }
+}
+
+/// Regression coverage for the "a later voice/speed change persists the
+/// startup fallback over the user's saved chord" bug.
+///
+/// `set_voice`/`set_speed` cannot be invoked here (they take `AppHandle`;
+/// see `command_tests`), but their disk-write path is `persist`, and the
+/// startup fallback's state update is `set_active_shortcut` — both are
+/// driven directly below, in the order the real app runs them.
+#[cfg(test)]
+mod settings_state_tests {
+    use super::*;
+
+    #[test]
+    fn a_startup_fallback_is_not_persisted_over_the_saved_chord_by_a_later_speed_change() {
+        let dir = std::env::temp_dir().join(format!(
+            "aloud-settings-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let saved = Settings {
+            region_shortcut: "Alt+Shift+E".into(),
+            voice: "F5".into(),
+            speed: 1.0,
+        };
+        saved.save(&dir).unwrap();
+
+        let state = SettingsState {
+            active_shortcut: Mutex::new(saved.region_shortcut.clone()),
+            settings: Mutex::new(saved.clone()),
+            config_dir: dir.clone(),
+        };
+
+        // Launch: "Alt+Shift+E" would not register, so the default is in
+        // force instead — in memory only, never persisted.
+        set_active_shortcut(&state, aloud::settings::DEFAULT_SHORTCUT);
+
+        // The user then nudges the speed slider. This is `set_speed`'s
+        // entire disk-write path, and `Settings::save` writes the WHOLE
+        // struct — which is how the fallback used to escape to disk.
+        persist(&state, |s| s.speed = 1.5).unwrap();
+
+        let on_disk = Settings::load(&dir);
+        assert_eq!(
+            on_disk.region_shortcut, "Alt+Shift+E",
+            "the saved chord must survive an unrelated settings change, or \
+             the next launch can never retry it"
+        );
+        assert_eq!(on_disk.speed, 1.5, "the speed change itself must persist");
+        assert_eq!(
+            state.active_shortcut.lock().unwrap().as_str(),
+            aloud::settings::DEFAULT_SHORTCUT,
+            "the fallback stays in force for this session"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1271,6 +1544,45 @@ mod shortcut_registration_tests {
             "rollback succeeded, so the OS (and the tracked state) is back \
              on the old chord"
         );
+    }
+
+    #[test]
+    fn a_media_key_accelerator_never_reaches_register() {
+        // The startup path, which is the one that was exposed: a
+        // hand-edited settings.json is handed to `register()` verbatim,
+        // never passing through `Chord::to_accelerator` (whose own media
+        // denylist is what `tests/shortcut.rs` covers, and which was never
+        // the risk). Registering a media key routes into
+        // `start_watching_media_keys` -> `CGEventTapCreate`, and creating
+        // that session-level tap is what makes macOS demand Accessibility
+        // / Input Monitoring — which this app must never do.
+        //
+        // Case variants and the `MediaTrackPrev` alias are included
+        // because the plugin's own parser uppercases before matching and
+        // accepts both spellings (global-hotkey-0.8.0 hotkey.rs), so an
+        // exact-case check would let these through to the tap.
+        for accel in [
+            "CmdOrCtrl+MediaPlayPause",
+            "cmdorctrl+mediaplaypause",
+            "CmdOrCtrl+MEDIATRACKNEXT",
+            "CmdOrCtrl+MediaTrackPrev",
+            "CmdOrCtrl+MediaTrackPrevious",
+            "Alt+MediaFastForward",
+            "Alt+mediarewind",
+        ] {
+            let registrar = FakeRegistrar::new();
+            let registered: Mutex<Option<String>> = Mutex::new(None);
+
+            let result = apply_shortcut_with(&registrar, &registered, accel);
+
+            assert!(result.is_err(), "{accel} must be refused");
+            assert!(
+                registrar.register_calls.lock().unwrap().is_empty(),
+                "{accel} must never reach register() — that call is what \
+                 creates the CGEventTap"
+            );
+            assert_eq!(registered.lock().unwrap().as_deref(), None);
+        }
     }
 
     #[test]

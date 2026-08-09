@@ -100,6 +100,18 @@ impl Settings {
         }
         if self.region_shortcut.trim().is_empty() {
             self.region_shortcut = DEFAULT_SHORTCUT.to_string();
+        } else if crate::shortcut::is_media_accelerator(&self.region_shortcut) {
+            // A hand-edited settings.json is the only way a media key can
+            // reach `register()` without passing through
+            // `Chord::to_accelerator`, and registering one creates a
+            // session-level CGEventTap — the thing that makes macOS demand
+            // Accessibility / Input Monitoring access. Aloud never asks for
+            // that, so the value does not survive a load or a save.
+            log_line!(
+                "settings: region shortcut {:?} names a media key, using default",
+                self.region_shortcut
+            );
+            self.region_shortcut = DEFAULT_SHORTCUT.to_string();
         }
     }
 

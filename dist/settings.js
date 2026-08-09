@@ -10,6 +10,7 @@ const recordBtn = document.getElementById("record");
 const chordStatus = document.getElementById("chord-status");
 const speed = document.getElementById("speed");
 const speedValue = document.getElementById("speed-value");
+const speedStatus = document.getElementById("speed-status");
 const voiceStatus = document.getElementById("voice-status");
 
 let recording = false;
@@ -159,32 +160,72 @@ document.getElementById("open-services").addEventListener("click", () => {
   invoke("open_services_settings");
 });
 
+// The voice the user most recently asked for. A swap takes ~1.4s on a
+// background thread, so two quick clicks put two swaps in flight and the
+// completion events can arrive in either order; anything not matching the
+// latest request is a stale result and must not overwrite the status.
+let lastVoiceRequest = null;
+
+// The real outcome of a voice change — set_voice returning Ok() only means
+// the choice was saved and the rebuild started. The rebuild itself can
+// still fail (a partial ~/.cache/supertonic3 is enough), which used to
+// leave the page showing green "Ready." over an engine that never changed.
+window.__TAURI__.event.listen("aloud://voice-swapped", (e) => {
+  const { voice, error } = e.payload;
+  if (voice !== lastVoiceRequest) return;
+  if (error) setStatus(voiceStatus, error, "error");
+  else setStatus(voiceStatus, "Ready.", "ok");
+});
+
 for (const radio of document.querySelectorAll('input[name="voice"]')) {
   radio.addEventListener("change", async () => {
+    lastVoiceRequest = radio.value;
     setStatus(voiceStatus, "Switching voice…", null);
     try {
       await invoke("set_voice", { voice: radio.value });
-      setStatus(voiceStatus, "Ready.", "ok");
+      // Deliberately no "Ready." here: the engine rebuild is still
+      // running. The aloud://voice-swapped listener above reports what
+      // actually happened.
     } catch (err) {
+      lastVoiceRequest = null;
       setStatus(voiceStatus, String(err), "error");
     }
   });
+}
+
+function showSpeed(v) {
+  speed.value = v;
+  speedValue.textContent = Number(v).toFixed(2) + "×";
 }
 
 speed.addEventListener("input", () => {
   speedValue.textContent = Number(speed.value).toFixed(2) + "×";
 });
 speed.addEventListener("change", async () => {
-  const applied = await invoke("set_speed", { speed: Number(speed.value) });
-  speed.value = applied;
-  speedValue.textContent = Number(applied).toFixed(2) + "×";
+  try {
+    const applied = await invoke("set_speed", { speed: Number(speed.value) });
+    showSpeed(applied);
+    setStatus(speedStatus, "", null);
+  } catch (err) {
+    // Without this the slider sits at a value nothing was ever saved at,
+    // silently. Say what failed, then put the control back to what is
+    // actually stored.
+    setStatus(speedStatus, String(err), "error");
+    const s = await invoke("get_settings").catch(() => null);
+    if (s) showSpeed(s.speed);
+  }
 });
 
 (async function init() {
   const s = await invoke("get_settings");
   recordBtn.textContent = s.region_shortcut_pretty;
-  speed.value = s.speed;
-  speedValue.textContent = Number(s.speed).toFixed(2) + "×";
+  showSpeed(s.speed);
   const voice = document.querySelector(`input[name="voice"][value="${s.voice}"]`);
   if (voice) voice.checked = true;
-})();
+})().catch((err) => {
+  // Everything on this page is populated by that one call. Without a
+  // catch, a failure leaves index.html's hardcoded ⌘⇧R on the button, an
+  // unset slider and no voice selected — a settings window quietly
+  // describing a state the app is not in.
+  setStatus(chordStatus, "Could not load settings: " + String(err), "error");
+});

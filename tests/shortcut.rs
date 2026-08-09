@@ -40,8 +40,15 @@ fn a_bare_key_is_rejected() {
     assert!(matches!(c.to_accelerator(), Err(ChordError::NoModifier)));
 }
 
+/// Covers the IPC path ONLY — a chord recorded in the settings window.
+/// It is deliberately not named for the CGEventTap guarantee as a whole:
+/// the persisted path (a hand-edited `settings.json` handed straight to
+/// `register()`, never passing through a `Chord`) is the one that could
+/// actually create the tap, and it is covered by
+/// `is_media_accelerator` below plus
+/// `aloud.rs::shortcut_registration_tests::a_media_key_accelerator_never_reaches_register`.
 #[test]
-fn media_keys_are_rejected_because_they_create_a_cgeventtap() {
+fn media_keys_recorded_in_the_settings_window_are_rejected() {
     for code in [
         "MediaPlayPause",
         "MediaTrackNext",
@@ -53,6 +60,50 @@ fn media_keys_are_rejected_because_they_create_a_cgeventtap() {
         assert!(
             matches!(c.to_accelerator(), Err(ChordError::MediaKey)),
             "{code} should be rejected"
+        );
+    }
+}
+
+/// The screen that guards the *persisted* accelerator string, which is
+/// what actually reaches `global_shortcut().register()` at startup.
+#[test]
+fn media_key_accelerators_are_recognised_however_they_are_spelled() {
+    for accel in [
+        "CmdOrCtrl+MediaPlayPause",
+        // The plugin's parser matches on `key.to_uppercase()`, so case is
+        // not a defence.
+        "cmdorctrl+mediaplaypause",
+        "CMDORCTRL+MEDIAPLAYPAUSE",
+        "CmdOrCtrl+MediaTrackNext",
+        // Both spellings parse to Code::MediaTrackPrevious.
+        "CmdOrCtrl+MediaTrackPrev",
+        "CmdOrCtrl+MediaTrackPrevious",
+        "Alt+MediaFastForward",
+        "Alt+MediaRewind",
+        // No modifier at all: `register()` does not require one, so the
+        // screen must not either.
+        "MediaPlayPause",
+    ] {
+        assert!(
+            aloud::shortcut::is_media_accelerator(accel),
+            "{accel} names a media key and must be caught"
+        );
+    }
+}
+
+#[test]
+fn ordinary_accelerators_are_not_mistaken_for_media_keys() {
+    for accel in [
+        "CmdOrCtrl+Shift+R",
+        "Alt+Shift+E",
+        "CmdOrCtrl+Alt+5",
+        "Alt+Shift+ArrowUp",
+        "Alt+F7",
+        "",
+    ] {
+        assert!(
+            !aloud::shortcut::is_media_accelerator(accel),
+            "{accel} is a perfectly ordinary shortcut"
         );
     }
 }
