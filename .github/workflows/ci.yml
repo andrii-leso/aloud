@@ -1,0 +1,204 @@
+# Aloud CI.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS CHECK DOES AND DOES NOT PROVE — read this before trusting a tick.
+# ---------------------------------------------------------------------------
+#
+# A green tick here means: the crate compiles in release on macOS, the Swift
+# OCR helper compiles, the code is rustfmt-clean, and 180 of the repo's 187
+# tests pass.
+#
+# It does NOT mean the app works. Seven tests cannot run on a hosted runner,
+# and they are the ones that exercise real speech:
+#
+#   NOT RUN — needs the 385 MB Supertonic model, which is not in the repo and
+#   has no first-run download yet (README, "Known limits"); a runner has no
+#   way to obtain it:
+#     tests/engine_smoke.rs        (2)  synthesis produces audio at all
+#     tests/engine_speed_pin.rs    (1)  CLAUDE.md constraint 6 — the engine is
+#                                       always driven at speed 1.0. This is the
+#                                       guard for a bug that silently deleted
+#                                       words from the middle of a sentence.
+#     tests/engine_thread.rs       (1)  the engine is usable from many threads
+#     tests/latency_budget.rs      (1)  CLAUDE.md constraint 5 — first audio
+#                                       arrives in <=70% of whole-paragraph time
+#     tests/voice_swap.rs          (1)  a second voice really spawns and speaks
+#
+#   NOT RUN — needs a built helper AND Apple's Vision framework at runtime:
+#     tests/ocr_macos.rs           (1)  German OCR with umlauts
+#   The helper IS compiled below, so a broken helpers/macos-ocr/ocr.swift still
+#   fails CI. Only *running* Vision headlessly on a hosted runner is unverified
+#   — nobody has tried it. If someone does and it works, add
+#   `--test ocr_macos` to the test step and delete this paragraph.
+#
+# Three further tests are #[ignore]d in the source and so are skipped here as
+# they are locally: the absolute (rather than ratio) latency budget, which
+# asserts a property of the machine rather than of the code; the rodio pause
+# test, which opens a real audio device; and the ASR-backed word-drop test,
+# which needs a local Whisper install.
+#
+# So: constraints 5 and 6 — the two that guard against silently mangled
+# speech — are NOT enforced by this workflow. Run `cargo test --release`
+# locally, with the model present, before trusting a change to src/tts/.
+#
+# To re-derive the model-free subset after adding a test file, point the model
+# dir at something that does not exist and see what breaks:
+#
+#   ALOUD_MODEL_DIR=/nonexistent cargo test --release
+#
+# Note that a new test file is NOT picked up automatically — the test step
+# below names its targets one by one, on purpose, so that what CI covers is
+# readable rather than inferred. Add new files to that list.
+#
+# There is no clippy step. Six lints pre-date this workflow: four in
+# src/vendor/supertonic/ (vendored, never edited — CLAUDE.md) and two in
+# src/text/chunk.rs. `cargo clippy -- -D warnings` therefore cannot pass
+# repo-wide, and the two ways to force it green — editing protected code, or a
+# blanket `-A` for those lint names, which would also silence them in new code
+# — are both worse than having no clippy gate. Fix those six and add the step.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to the same branch cancels the first. macOS runners are the
+# expensive kind; there is no point paying for a result nobody will read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS — build, format, model-free tests
+    # macos-latest is arm64, i.e. the same architecture as the M1 this app is
+    # developed on. It also moves: a new runner image can bring a new Xcode
+    # and break a build that has not changed. If that ever happens, pin to the
+    # numbered image that was working (macos-15, macos-14, …) rather than
+    # debugging the difference.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `@stable` here names the Rust channel, not a version of the action.
+      # It means rustfmt can change its mind between runs: if the Format step
+      # fails on a file nobody touched, that is a new rustfmt, and the fix is
+      # `cargo fmt` locally, not an argument with CI.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # One cache entry holding four paths, and they must travel together.
+      # `ort-sys` downloads a prebuilt static ONNX Runtime at build time and
+      # bakes the absolute path to it into its build-script output. If
+      # `target/` were restored without ~/Library/Caches/ort.pyke.io, cargo
+      # would consider ort-sys already built, not re-run the script, and then
+      # fail to link against a directory that is not there. Keyed on
+      # Cargo.lock, which is what decides both.
+      #
+      # `target/` is ~2 GB here, so this entry is large. If it ever becomes
+      # the slow part of the run, or crowds the repo's 10 GB cache budget,
+      # delete the `target` line — the build gets slower, nothing breaks, and
+      # the ONNX coupling above stops mattering because the build script will
+      # then always re-run.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/Library/Caches/ort.pyke.io
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      # --locked: Cargo.toml pins ort and ort-sys to exact release-candidate
+      # versions with a paragraph of reasoning attached. CI must not quietly
+      # resolve something else.
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      # Compiles helpers/macos-ocr/ocr.swift to target/aloud-ocr. Needs
+      # target/ to exist, so it follows the build. The test that uses it is
+      # not run — see the header.
+      - name: Build the Swift OCR helper
+        run: helpers/macos-ocr/build.sh
+
+      # Release, never debug: CLAUDE.md constraint 10. A bare `cargo test`
+      # would build a second ~3 GB tree and run ONNX inference unoptimised.
+      # Targets are listed explicitly — see the header for what is missing.
+      - name: Test (model-free subset)
+        run: |
+          cargo test --release --locked \
+            --lib \
+            --bins \
+            --test actions \
+            --test player_pause \
+            --test player_stop \
+            --test selection \
+            --test selection_toggle \
+            --test settings \
+            --test shortcut \
+            --test shortcut_apply
+
+# ---------------------------------------------------------------------------
+# The Windows job. Deliberately commented out — do not uncomment on its own.
+# ---------------------------------------------------------------------------
+#
+# There is no Windows implementation on main yet (M6). WinRT bindings do not
+# compile on macOS, the OCR and selection seams have no Windows side, and
+# `cargo build` for windows-latest would fail on the first file. A job that is
+# permanently red is worse than no job: it trains everyone to ignore the tick.
+#
+# Uncomment this in the SAME change that lands the port, not before, and check
+# the test list against what actually builds there — most of the subset above
+# is platform-neutral, but that is a claim to verify on the runner, not to
+# assume from here.
+#
+#  windows:
+#    name: Windows — build, format, model-free tests
+#    runs-on: windows-latest
+#
+#    steps:
+#      - uses: actions/checkout@v4
+#
+#      - uses: dtolnay/rust-toolchain@stable
+#        with:
+#          components: rustfmt
+#
+#      - uses: actions/cache@v4
+#        with:
+#          path: |
+#            ~/.cargo/registry
+#            ~/.cargo/git
+#            ~/AppData/Local/ort.pyke.io
+#            target
+#          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+#
+#      - name: Format
+#        run: cargo fmt --check
+#
+#      - name: Build (release)
+#        run: cargo build --release --locked
+#
+#      - name: Test (model-free subset)
+#        run: |
+#          cargo test --release --locked `
+#            --lib `
+#            --bins `
+#            --test actions `
+#            --test player_pause `
+#            --test player_stop `
+#            --test selection `
+#            --test selection_toggle `
+#            --test settings `
+#            --test shortcut `
+#            --test shortcut_apply

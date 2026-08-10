@@ -15,8 +15,14 @@ then whichever `docs/` record matches what you are touching.
 
 ## 1. What works
 
-macOS only. `main` at the time of writing is the pause-chord-removal commit; `cargo test
---release` is **186 passed, 0 failed, 3 ignored**.
+macOS only. `cargo test --release` is **187 passed, 0 failed, 3 ignored**.
+
+The repo is now on GitHub (private, `AndrewRise/aloud`) and has CI —
+`.github/workflows/ci.yml`, macOS only, and its header is worth reading before you trust a
+tick. It runs 180 of the 187: everything that needs neither the 385 MB model nor a real
+device. **The seven it cannot run include the engine-speed pin and the latency ratio** — the
+two guards against silently mangled speech — so a green tick is not a substitute for running
+the suite locally.
 
 | Capability | Trigger | Notes |
 |---|---|---|
@@ -150,6 +156,12 @@ no Windows equivalent worth faking.
 **Branch `m6-windows-prep` carries the prep work** — `icons/icon.ico`, the Windows-sized tray
 PNGs and their generator, and `cfg`-gated seam stubs (`src/capture/windows.rs`,
 `src/ocr/windows.rs`, `src/selection/windows.rs`).
+
+**A Windows CI job is already written, commented out, at the bottom of
+`.github/workflows/ci.yml`.** Uncomment it in the same change that lands the port — not
+before, because nothing Windows compiles on `main` today and a permanently red job trains
+everyone to ignore the tick. Check its test list against what actually builds there rather
+than assuming the macOS subset carries over.
 
 ⚠ **That branch is six commits behind `main` and was cut before the pause/toggle work.** Its
 merge base is `175c73b`; relative to `main` it is missing pause/resume, the ⌘⇧A toggle, the

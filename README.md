@@ -240,6 +240,49 @@ down to the blocked-app message naming Aloud, and click **Open Anyway**
 and choose Open; that path does not appear in Apple's current support
 documentation for this OS and should not be relied on.)
 
+## Tests and CI
+
+Run the suite in **release**, never debug — a bare `cargo test` builds a
+second ~3 GB tree and runs ONNX inference unoptimised, which makes the
+timing-sensitive tests meaningless anyway:
+
+```bash
+cargo test --release
+```
+
+That is 187 tests, and it needs the Supertonic model present. Three more
+are `#[ignore]`d because they need something the suite cannot assume — a
+real audio device, a local Whisper install, or an idle machine — and are
+run by hand when you touch the code they cover:
+
+```bash
+cargo test --release --test player_pause -- --ignored          # real audio device
+cargo test --release --test speed_preserves_words -- --ignored # needs Whisper
+cargo test --release --test latency_budget -- --ignored        # idle machine only
+```
+
+**GitHub Actions (`.github/workflows/ci.yml`) runs 180 of the 187.** It
+builds in release, compiles the Swift OCR helper, checks `cargo fmt`, and
+runs every test that needs neither the model nor a device. It does **not**
+run the seven that do — the model is 385 MB, is not in the repo, and has
+no first-run download, so a hosted runner has no way to get it. That
+means the two constraints guarding against silently mangled speech (the
+engine-speed pin and the latency ratio) are **not** enforced by CI. A
+green tick is not a substitute for running the full suite locally before
+changing `src/tts/`.
+
+The workflow file states all of this at the top, alongside a Windows job
+that is deliberately commented out until the port exists. To re-derive
+which tests are model-free after adding a test file:
+
+```bash
+ALOUD_MODEL_DIR=/nonexistent cargo test --release
+```
+
+`cargo clippy -- -D warnings` does not pass repo-wide and there is no
+clippy step: four lints live in the vendored engine (never edited) and
+two in `src/text/chunk.rs`.
+
 ## Debugging
 
 Aloud is a menubar app with no console: launched via LaunchServices
