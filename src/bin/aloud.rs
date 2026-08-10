@@ -1755,7 +1755,9 @@ mod command_tests {
         assert_eq!(value["on"], false);
         assert_eq!(value["status"], "requires_approval");
         assert!(
-            value["note"].as_str().is_some_and(|n| n.contains("System Settings")),
+            value["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("System Settings")),
             "the one state the user has to fix themselves must say where"
         );
 
@@ -1789,7 +1791,10 @@ mod command_tests {
             serde_json::json!({ "enabled": true }),
         );
 
-        assert!(result.is_err(), "a refused registration must surface as an error");
+        assert!(
+            result.is_err(),
+            "a refused registration must surface as an error"
+        );
         assert!(
             !Settings::load(&dir).launch_at_login,
             "nothing may reach disk until the OS has accepted"

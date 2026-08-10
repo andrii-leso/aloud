@@ -105,9 +105,7 @@ impl LoginItemStatus {
                 "macOS could not find Aloud's login item. Check \
                  System Settings → General → Login Items.",
             ),
-            Self::Unknown(_) => {
-                Some("macOS reported a login-item state Aloud does not recognise.")
-            }
+            Self::Unknown(_) => Some("macOS reported a login-item state Aloud does not recognise."),
         }
     }
 }
@@ -167,7 +165,11 @@ pub trait LoginItemService: Send + Sync {
 /// success — an idempotent toggle must not report failure for arriving
 /// where it was told to go.
 pub fn apply(svc: &dyn LoginItemService, want: bool) -> Result<LoginItemStatus, LoginItemError> {
-    let result = if want { svc.register() } else { svc.unregister() };
+    let result = if want {
+        svc.register()
+    } else {
+        svc.unregister()
+    };
 
     match result {
         Ok(()) => {}
@@ -278,7 +280,10 @@ mod tests {
     fn turning_it_off_unregisters_then_reports_the_read_back_status() {
         let svc = FakeService::ok(LoginItemStatus::NotRegistered);
         assert_eq!(apply(&svc, false), Ok(LoginItemStatus::NotRegistered));
-        assert_eq!(svc.calls.lock().unwrap().as_slice(), ["unregister", "status"]);
+        assert_eq!(
+            svc.calls.lock().unwrap().as_slice(),
+            ["unregister", "status"]
+        );
     }
 
     #[test]
