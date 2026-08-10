@@ -74,6 +74,13 @@ define_class!(
             _user_data: *const NSString,
             _error: *mut *mut NSString,
         ) {
+            // Give the user's app its focus back — first, before any work
+            // and before any early return, because macOS has already taken
+            // it by the time this method is entered.
+            if let Some(mtm) = MainThreadMarker::new() {
+                yield_activation(mtm);
+            }
+
             // SAFETY: reading an AppKit extern constant.
             let string_type = unsafe { NSPasteboardTypeString };
             let Some(text) = pboard.stringForType(string_type) else {
@@ -107,6 +114,42 @@ impl ServiceProvider {
         let this = Self::alloc().set_ivars(ProviderIvars { handler });
         unsafe { msg_send![super(this), init] }
     }
+}
+
+/// Hands activation back to whatever app the user was working in.
+///
+/// macOS **activates the Services provider** as part of delivering a
+/// service message: `NSApp.isActive` is already `true` on the first line
+/// of `readSelection:userData:error:`, before a single line of Aloud's
+/// code has run. So there is nothing to decline and no hook to refuse it
+/// from — the app is frontmost, the user's window has lost key status,
+/// and their typing goes nowhere. Measured 2026-08-10 with the app
+/// already running (no relaunch): frontmost went Finder → Aloud ~110ms
+/// after `NSPerformService`. Evidence and the full reproduction:
+/// `docs/2026-08-10-selection-focus-steal.md`.
+///
+/// The remedy therefore has to be relinquishing activation, not
+/// preventing it. `NSApp.deactivate()` does **not** work here — verified
+/// twice, called inline and re-scheduled at 50/200/500/1000ms via
+/// `performSelector:afterDelay:`; `isActive` stayed `true` through all
+/// of it. `hide(_:)` is what actually lands, because it is documented to
+/// activate the next app in line rather than merely dropping our own
+/// active state.
+///
+/// Hiding is unconditional, including when the settings window happens
+/// to be open. That is deliberate: the rule is "on a selection read,
+/// Aloud always gets out of the way". Skipping the hide while a window
+/// is visible would leave the *worse* variant of this bug in place —
+/// the settings window jumping in front of the user's work on every
+/// ⌘⇧A. The cost is that reading a selection made *inside* the settings
+/// window hides it, and it is reopened from the tray.
+///
+/// Nothing else is affected: the status item is not an app window and
+/// survives, and Tauri's `show()`/`set_focus()` pair unhides the app on
+/// the next settings open (verified — the window appears, key and
+/// frontmost).
+fn yield_activation(mtm: MainThreadMarker) {
+    NSApplication::sharedApplication(mtm).hide(None);
 }
 
 /// Registers the Service provider with AppKit for the life of the process.
