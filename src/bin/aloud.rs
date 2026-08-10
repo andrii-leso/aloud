@@ -717,7 +717,78 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
+/// TEMPORARY — the M4 launch-at-login spike. Remove before shipping the
+/// feature. Registers, reports, and unregisters the login item from
+/// inside the real signed bundle, which is the only context in which
+/// `SMAppService.mainAppService` means anything (it resolves through
+/// `NSBundle.mainBundle`).
+#[cfg(target_os = "macos")]
+fn login_item_spike() {
+    use aloud::login_item::macos::AppServiceLoginItem;
+    use aloud::login_item::LoginItemService;
+
+    let svc = AppServiceLoginItem;
+    println!("exe:    {:?}", std::env::current_exe());
+    println!("before: {:?}", svc.status());
+
+    match svc.register() {
+        Ok(()) => println!("register: Ok"),
+        Err(e) => println!("register: Err domain={} code={} msg={}", e.domain, e.code, e.message),
+    }
+    println!("after register: {:?}", svc.status());
+
+    if std::env::args().any(|a| a == "--leave-registered") {
+        println!("leaving it registered as asked; run again without the flag to undo");
+        return;
+    }
+
+    match svc.unregister() {
+        Ok(()) => println!("unregister: Ok"),
+        Err(e) => println!(
+            "unregister: Err domain={} code={} msg={}",
+            e.domain, e.code, e.message
+        ),
+    }
+    println!("after unregister: {:?}", svc.status());
+}
+
+/// TEMPORARY — the M4 launch-at-login spike, unknown 2. Invokes the
+/// "Read Aloud" Service exactly the way the Services menu does
+/// (`NSPerformService`), so the selection path can be confirmed without
+/// synthetic keystrokes or the Accessibility permission.
+#[cfg(target_os = "macos")]
+fn service_probe() {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSPerformService};
+    use objc2_foundation::NSString;
+
+    let text = NSString::from_str("Service probe from the launch at login spike.");
+    // SAFETY: a fresh unique pasteboard, declared for string content and
+    // written to before use — the shape NSPerformService documents.
+    let ok = unsafe {
+        let pb = NSPasteboard::pasteboardWithUniqueName();
+        pb.declareTypes_owner(&objc2_foundation::NSArray::from_slice(&[NSPasteboardTypeString]), None);
+        pb.setString_forType(&text, NSPasteboardTypeString);
+        NSPerformService(&NSString::from_str("Read Aloud"), Some(&pb))
+    };
+    println!("NSPerformService(\"Read Aloud\") -> {ok}");
+}
+
 fn main() {
+    // TEMPORARY spike hooks — see the two functions above. Both run
+    // before any Tauri setup and exit.
+    #[cfg(target_os = "macos")]
+    {
+        aloud::log::init();
+        if std::env::args().any(|a| a == "--login-item-spike") {
+            login_item_spike();
+            return;
+        }
+        if std::env::args().any(|a| a == "--service-probe") {
+            service_probe();
+            return;
+        }
+    }
+
     // Must run before anything else that might log: when the app is
     // launched as a bundle via LaunchServices (the only way it works
     // correctly — see the Service registration below), stderr is not

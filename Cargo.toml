@@ -53,6 +53,23 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSString",
+    # The NSError `SMAppService` hands back on a failed register/unregister
+    # (src/login_item/macos.rs). Listed here rather than inherited from
+    # objc2-service-management's own feature set, which happens to enable
+    # it today — this crate names what it uses.
+    "NSError",
+] }
+# SMAppService, for launch-at-login. Same objc2 0.3.x generation as the
+# two crates above, so it costs no new bindings generation. Deliberately
+# NOT tauri-plugin-autostart: that pins auto-launch 0.5, whose default
+# macOS mode writes a LaunchAgent pointing at the inner binary and
+# bypasses LaunchServices — which would silently kill the NSServices
+# selection path (see src/login_item/mod.rs and CLAUDE.md).
+objc2-service-management = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2",
+    "objc2-foundation",
+    "SMAppService",
 ] }
 
 [dev-dependencies]
