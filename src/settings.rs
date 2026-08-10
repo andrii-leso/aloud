@@ -14,9 +14,13 @@ pub const DEFAULT_SHORTCUT: &str = "CmdOrCtrl+Shift+R";
 pub const DEFAULT_VOICE: &str = "F5";
 pub const DEFAULT_SPEED: f32 = 1.0;
 
-/// Speed bounds. Below ~0.27x one chunk exceeds 30s of audio and
-/// false-positives the player's stall watchdog; the CLI clamps to the
-/// same window.
+/// Speed bounds. The floor exists because a slow enough chunk exceeds 30s
+/// of audio and false-positives the player's stall watchdog; the CLI
+/// clamps to the same window. The threshold is around **0.65-0.67x**, not
+/// the ~0.27x this comment used to claim: 0.27 was derived from a 120-char
+/// cap on every chunk, which now applies only to the first one
+/// (`LATER_CHUNK_CHARS` = 300, ~20s at 1.0x — see `STALL_TIMEOUT` in
+/// `src/play/player.rs`). So 0.7 leaves 1-4s of margin, not 30.
 pub const MIN_SPEED: f32 = 0.7;
 pub const MAX_SPEED: f32 = 2.0;
 
@@ -27,6 +31,17 @@ pub const VOICES: [&str; 2] = ["F5", "M5"];
 
 const FILE_NAME: &str = "settings.json";
 
+/// Two serde behaviours here are load-bearing for migration, in both
+/// directions, and neither may be tightened. The container-level
+/// `#[serde(default)]` lets a file written *before* a field existed still
+/// load, filling the gap rather than rejecting the document. And the
+/// absence of `deny_unknown_fields` lets a file written *after* a field
+/// was removed still load: any `settings.json` a Phase 1 build saved
+/// carries a `pause_shortcut` key for the since-retired pause chord, and
+/// it must be ignored silently, leaving the region shortcut, voice, speed
+/// and launch state intact. Either failure mode ends the same way —
+/// `load` falls back to defaults and the user silently loses every saved
+/// value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {

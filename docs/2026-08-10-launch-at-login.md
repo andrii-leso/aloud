@@ -2,10 +2,11 @@
 
 2026-08-10. Branch `feat/launch-at-login`, off `main` at `539bda4`.
 
-`docs/HANDOFF.md` filed launch-at-login as a **spike, not a task**: three
-unknowns stacked on it, each capable of invalidating the design. This
-records the spike (run against the real installed bundle on this machine)
-and the feature built on its result.
+`docs/HANDOFF.md` — as it stood on 2026-08-09, before this work closed the
+question and the file was rewritten — filed launch-at-login as a **spike,
+not a task**: three unknowns stacked on it, each capable of invalidating
+the design. This records the spike (run against the real installed bundle
+on this machine) and the feature built on its result.
 
 Machine: M1 MacBook Air, **macOS 26.6 (25G72)**. Every number below is from
 that machine on that date; none of it is inherited from documentation.

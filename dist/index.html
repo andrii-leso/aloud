@@ -13,9 +13,19 @@
 
   <section>
     <h2>Read Selection</h2>
+    <!-- Kept to TWO rendered lines at the window's 480px inner width, on
+         purpose. The window is a fixed, non-resizable 690px and the
+         launch-at-login failure note has to stay above the fold (see
+         open_settings_window in src/bin/aloud.rs); a third line here costs
+         19px and eats most of that margin. The load-bearing measurement is
+         the delta, which is zero: this wording renders to the same page
+         height as the shorter sentence it replaced. (Measured in Chromium
+         at 480px: 610px plain, 663px with the note showing. Those absolutes
+         run a line under the figures in aloud.rs, which were taken in the
+         real WKWebView — trust the delta, not the number.) -->
     <p class="hint">
-      Select text in any app, then press <kbd>⌘⇧A</kbd> — or use the app's
-      Services menu.
+      Select text and press <kbd>⌘⇧A</kbd>, or use the Services menu. Press
+      again to pause or resume; select different text to read that instead.
     </p>
     <p class="hint muted">
       This one belongs to macOS, not to Aloud: it is a system Service, so it

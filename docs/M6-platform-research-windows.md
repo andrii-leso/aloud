@@ -129,9 +129,17 @@ copies of 16/32/48 for RDP. 16/20/24 must be redrawn, not downscaled — see 1.4
   **nothing to do with the tray glyph**. The tray glyph is whatever PNG/RGBA Aloud passes at runtime,
   scaled by the shell. Handing it the existing macOS-sized `tray.png` will produce a blurry tray icon
   at 100% and 150% scaling.
-- **Carry-forward is already relevant here:** `HANDOFF.md` records that at 22 pt on macOS only the
-  square and the "A" read; the crosshair and speaker corners do not. On Windows the *base* size is
-  16 px, smaller than macOS's 22 pt — so the simplification decision is forced, not optional.
+- **Carry-forward is already relevant here:** the first-use finding on macOS was that at 22 pt only
+  the square and the "A" read, and neither corner element did. On Windows the *base* size is 16 px,
+  smaller than macOS's 22 pt — so the simplification decision is forced, not optional.
+  **Updated 2026-08-10 — how that resolved on macOS, since it is the input to the same decision
+  here.** The **crosshair was dropped** (drawn at (6, 38) with 6 pt arms, it straddled the square's
+  own top-left corner and fused into it as a thicker stroke — weight without meaning). The
+  **speaker was kept**, after being redrawn: two earlier passes tucked it *inside* the bottom-right
+  corner where it fused with the frame stroke and vanished; pulling it out to straddle the corner
+  isolates it against transparency and it reads. So the shipped macOS glyph is square + "A" +
+  speaker (`icons/make_tray_icon.swift`). At 16 px the speaker may still not survive — test it,
+  do not assume it inherits.
 
 ### 1.5 Showing and focusing the settings window from a tray click
 
@@ -424,6 +432,13 @@ revision.
 
 1. **Use `tauri-plugin-autostart` (HKCU Run key) and keep the default `app_name`.** Overriding
    `Builder::app_name()` desynchronises the plugin from Tauri's uninstaller and orphans the Run value.
+   ⚠ **This collides head-on with the repo `CLAUDE.md`'s "do not add `tauri-plugin-autostart`" — and
+   the collision is only apparent.** That ban is macOS-scoped: on macOS the plugin's LaunchAgent mode
+   execs the inner `Contents/MacOS/aloud`, bypassing LaunchServices and silently killing the
+   `NSServices` provider that ⌘⇧A depends on, which is why macOS uses `SMAppService` directly
+   (`src/login_item/`, shipped 2026-08-10). The Windows Run-key mechanism shares none of that. The
+   `CLAUDE.md` bullet has been reworded to say so. **If M6 adopts the plugin, `cfg`-gate the
+   dependency to Windows** so it cannot reach the macOS build.
 2. **Make the settings toggle read `isEnabled()`, not a stored boolean.** The plugin already folds
    `StartupApproved` into that call, so the toggle can reflect a Task-Manager disable instead of
    lying. This was an explicit research question and the answer is favourable — use it.

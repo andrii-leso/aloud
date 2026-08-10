@@ -14,7 +14,65 @@ Two ways to trigger it:
   menu), or press **Cmd+Shift+A**. This route never touches Accessibility
   or the clipboard — see "Permissions" below for why.
 
-Both the region shortcut and the voice/speed the app reads with are
+`Cmd+Shift+A` is a play/pause toggle, not just a "read this":
+
+| you press it… | what happens |
+|---|---|
+| with text selected, nothing playing | it reads that selection |
+| again, same text still selected | it **pauses** |
+| again | it **resumes**, from the exact word it stopped on |
+| with *different* text selected | it stops the current read and starts the new one |
+
+Nothing to remember and no second key: the text you have selected is how
+Aloud knows which of those you meant. The same passage means "toggle
+this"; a different passage means "read this instead". macOS will not
+invoke the Service with nothing selected, so the key simply does not fire
+in that case.
+
+Two details worth knowing. Leading and trailing whitespace is ignored
+when comparing, so a slightly sloppy re-selection still counts as "the
+same text" — but a difference *inside* the selection (different
+indentation, say) counts as different text and starts a new read. And if
+you happen to select the identical words somewhere else, Aloud reads that
+as the same text and toggles rather than restarting; there is no way for
+it to tell those apart, and guessing would be worse.
+
+That pause is a true pause: playback halts mid-sentence and continues
+from the exact sample, with nothing re-read and nothing already
+synthesised thrown away.
+
+The tray's **Pause** / **Resume** item does the same thing, and it is
+there for the case the key cannot cover. `Cmd+Shift+A` reaches Aloud as a
+macOS Service, and macOS does not invoke a Service with nothing selected
+— so if you have clicked away and lost the selection, the tray item is
+how you pause. It reads **Resume** exactly while playback is paused,
+whichever of the two paused it.
+
+There is no separate pause chord. There was one, `Cmd+Shift+P`, before
+`Cmd+Shift+A` became a toggle; it was removed as redundant — and it
+collided with VS Code's Command Palette, which a global hotkey wins while
+Aloud is running.
+
+Aloud binds no **media** keys, here or anywhere. That is deliberate and
+permanent, and it now rests on two separate results rather than one.
+Media keys are the only path in `global-hotkey` that creates a
+`CGEventTap`, and an active tap from an untrusted process is refused
+outright — measured on this machine, macOS 26.6
+(`docs/media-key-control-research.md` §4). Aloud never asks for
+Accessibility, so it never takes that route.
+
+The one route that needed no tap and no permission — registering with
+`MPRemoteCommandCenter`, the way Music and Spotify do — was actually
+built and then dropped. Holding the play/pause key while Aloud speaks is
+only acceptable if Aloud hands it back when the read ends, and on the
+owner's own test it did not: after a read finished, the key no longer
+returned control to Music.app. That leaves your music worse off after
+every read, which is worse than not having the feature. The branch is
+kept unmerged at the tag `experiment/media-key-mpremote` and is not part
+of any build. A side benefit of binding no media keys at all is that
+Aloud's keys keep working while Spotify or Music has them.
+
+The region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
 below.
 
@@ -28,8 +86,11 @@ Read Aloud instead of the app's own binding; rebind one of the two in
 System Settings if that collides with your workflow.
 
 Aloud lives in the menubar only: no Dock icon, and no window until you
-open one yourself. Use the tray icon to trigger a region read, stop
-whatever is currently speaking, open **Settings…**, or quit.
+open one yourself. Use the tray icon to trigger a region read, pause or
+resume it, stop whatever is currently speaking, open **Settings…**, or
+quit. The Pause item names what the click will do, not the state it is
+in: it reads **Resume** exactly while playback is paused, whether it was
+`Cmd+Shift+A` or the item itself that paused it.
 
 ## Permissions
 
@@ -179,6 +240,49 @@ down to the blocked-app message naming Aloud, and click **Open Anyway**
 and choose Open; that path does not appear in Apple's current support
 documentation for this OS and should not be relied on.)
 
+## Tests and CI
+
+Run the suite in **release**, never debug — a bare `cargo test` builds a
+second ~3 GB tree and runs ONNX inference unoptimised, which makes the
+timing-sensitive tests meaningless anyway:
+
+```bash
+cargo test --release
+```
+
+That is 187 tests, and it needs the Supertonic model present. Three more
+are `#[ignore]`d because they need something the suite cannot assume — a
+real audio device, a local Whisper install, or an idle machine — and are
+run by hand when you touch the code they cover:
+
+```bash
+cargo test --release --test player_pause -- --ignored          # real audio device
+cargo test --release --test speed_preserves_words -- --ignored # needs Whisper
+cargo test --release --test latency_budget -- --ignored        # idle machine only
+```
+
+**GitHub Actions (`.github/workflows/ci.yml`) runs 180 of the 187.** It
+builds in release, compiles the Swift OCR helper, checks `cargo fmt`, and
+runs every test that needs neither the model nor a device. It does **not**
+run the seven that do — the model is 385 MB, is not in the repo, and has
+no first-run download, so a hosted runner has no way to get it. That
+means the two constraints guarding against silently mangled speech (the
+engine-speed pin and the latency ratio) are **not** enforced by CI. A
+green tick is not a substitute for running the full suite locally before
+changing `src/tts/`.
+
+The workflow file states all of this at the top, alongside a Windows job
+that is deliberately commented out until the port exists. To re-derive
+which tests are model-free after adding a test file:
+
+```bash
+ALOUD_MODEL_DIR=/nonexistent cargo test --release
+```
+
+`cargo clippy -- -D warnings` does not pass repo-wide and there is no
+clippy step: four lints live in the vendored engine (never edited) and
+two in `src/text/chunk.rs`.
+
 ## Debugging
 
 Aloud is a menubar app with no console: launched via LaunchServices
@@ -204,9 +308,16 @@ the Service callback firing, and every error — is also logged to
   property of how busy the machine is at that moment.
 - **The Supertonic model must already exist at `~/.cache/supertonic3`**
   (or `$ALOUD_MODEL_DIR`, if set) — there is no first-run download yet.
-- **The hotkey and the Service are silently ignored while a read is
-  already speaking.** A trigger that lands while one is in flight is
-  dropped with no notification, the same as a deliberate cancel.
+- **The region hotkey is silently ignored while another read is in
+  flight — including a paused one.** A second `Cmd+Shift+R` that lands
+  while a read is under way is dropped with no notification, the same as a
+  deliberate cancel, and a *paused* read is still a read in flight (a
+  state `Cmd+Shift+A` makes easy to reach). The region hotkey carries no
+  text, so Aloud cannot tell a deliberate re-trigger from a stray
+  double-press, and interrupting on a stray press would be worse. To get
+  out of it, Stop from the tray, or resume and let it finish.
+  `Cmd+Shift+A` is different: it carries the selection, so a second press
+  is a pause or a new read rather than nothing (see the table above).
 - **Reading a selection made inside the Settings window hides that
   window.** macOS activates Aloud whenever it delivers a selection to
   the Service, so Aloud hands activation straight back — otherwise every

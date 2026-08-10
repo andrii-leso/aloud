@@ -60,6 +60,48 @@ fn a_settings_file_written_before_launch_at_login_existed_still_loads() {
 }
 
 #[test]
+fn a_settings_file_still_carrying_the_retired_pause_shortcut_loads_untouched() {
+    // Any settings.json a Phase 1 build saved carries a `pause_shortcut`
+    // key that no longer maps to a field. Serde must ignore it — no
+    // `deny_unknown_fields`, now or ever. If it were rejected the whole
+    // document fails to parse, `load` falls back to defaults, and the
+    // user silently loses his region shortcut, voice, speed and
+    // launch-at-login on the next launch: the exact failure removing a
+    // field is supposed to be free of.
+    //
+    // The owner's own live file happens not to carry the key — the Phase
+    // 1 bundle was never installed over /Applications/Aloud.app — so this
+    // guard is not currently load-bearing for him. It is still the wrong
+    // thing to leave untested: a settings.json is user data, and "it
+    // happens not to have that key today" is not a property the code can
+    // rely on.
+    let d = tmpdir("post-pause");
+    fs::write(
+        d.join("settings.json"),
+        br#"{"region_shortcut":"Alt+Shift+E","pause_shortcut":"CmdOrCtrl+Shift+P",
+             "voice":"M5","speed":1.5,"launch_at_login":true}"#,
+    )
+    .unwrap();
+    let s = Settings::load(&d);
+    assert_eq!(s.region_shortcut, "Alt+Shift+E");
+    assert_eq!(s.voice, "M5");
+    assert_eq!(s.speed, 1.5);
+    assert!(s.launch_at_login);
+
+    // And the dead key does not come back out: the next save writes the
+    // current shape, so the file self-cleans on the first settings
+    // change rather than carrying the retired chord forever.
+    s.save(&d).unwrap();
+    let raw = fs::read_to_string(d.join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        written.get("pause_shortcut").is_none(),
+        "a save must not write the retired key back out, got {raw}"
+    );
+    assert_eq!(written["region_shortcut"], "Alt+Shift+E");
+}
+
+#[test]
 fn corrupt_file_yields_defaults_rather_than_failing() {
     let d = tmpdir("corrupt");
     fs::write(d.join("settings.json"), b"{ this is not json").unwrap();
@@ -104,6 +146,51 @@ fn speed_is_clamped_on_load_and_on_save() {
     let raw = fs::read_to_string(d.join("settings.json")).unwrap();
     let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(written["speed"], 2.0, "save() must clamp before writing");
+}
+
+#[test]
+fn an_empty_region_shortcut_falls_back_to_the_default() {
+    // `normalize`'s empty-string branch. It used to live in a shared
+    // `normalize_shortcut` helper covering both persisted chords, and was
+    // asserted through the pause field
+    // (`an_empty_pause_shortcut_falls_back_to_the_default`). When the pause
+    // chord was retired the helper was folded back inline onto
+    // `region_shortcut` and that test went with the field — but the branch
+    // did not go anywhere. It still runs on every load and every save, and
+    // it was left unasserted.
+    //
+    // Nothing in the app can produce an empty value: `set_shortcut` only
+    // ever persists what `Chord::to_accelerator` returned. A hand-edited or
+    // truncated settings.json can, and this branch is what stops it
+    // persisting. There is a second, independent guard downstream — a
+    // failed `register()` at startup falls back to the default — but that
+    // one recovers the *session* and leaves the file broken, so it re-runs
+    // on every launch. This is the one that repairs the value.
+    for raw in [
+        br#"{"region_shortcut":""}"#.to_vec(),
+        br#"{"region_shortcut":"   "}"#.to_vec(),
+    ] {
+        let d = tmpdir("empty-region");
+        fs::write(d.join("settings.json"), &raw).unwrap();
+        assert_eq!(
+            Settings::load(&d).region_shortcut,
+            DEFAULT_SHORTCUT,
+            "an empty region shortcut must be replaced by the default on load"
+        );
+    }
+
+    // And on save, asserted on the raw file: load() normalizes too, so a
+    // load-based assertion would pass even with the write side broken.
+    let d = tmpdir("empty-region-save");
+    Settings {
+        region_shortcut: "  ".into(),
+        ..Settings::default()
+    }
+    .save(&d)
+    .unwrap();
+    let raw = fs::read_to_string(d.join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(written["region_shortcut"], DEFAULT_SHORTCUT);
 }
 
 #[test]

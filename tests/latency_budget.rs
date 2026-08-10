@@ -148,6 +148,14 @@ impl AudioSink for RecordingSink {
     }
 
     fn stop(&self) {}
+
+    // Never paused here; pause/resume are covered by
+    // `tests/player_pause.rs` against a sink that models them.
+    fn pause(&self) {}
+    fn resume(&self) {}
+    fn is_paused(&self) -> bool {
+        false
+    }
 }
 
 /// **Test 2: Absolute time-to-first-audio budget (ignored by default).**

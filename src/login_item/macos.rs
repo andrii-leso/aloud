@@ -49,7 +49,8 @@ impl LoginItemService for AppServiceLoginItem {
 
     fn unregister(&self) -> Result<(), LoginItemError> {
         // SAFETY: as above.
-        unsafe { SMAppService::mainAppService().unregisterAndReturnError() }.map_err(|e| from_ns(&e))
+        unsafe { SMAppService::mainAppService().unregisterAndReturnError() }
+            .map_err(|e| from_ns(&e))
     }
 }
 
