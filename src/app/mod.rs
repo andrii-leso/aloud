@@ -15,6 +15,12 @@
 //! already listening to on every stray double-press, which is worse
 //! ordinary-use behaviour than just ignoring the repeat.
 //!
+//! The busy flag covers `speak()` calls and nothing else. `stop()` and
+//! `toggle_pause()` are outside it by design: both only set atomics on
+//! the sink reached through the `Player`'s internal `Arc`s, and both must
+//! work *while* a read holds the flag. Guarding either one with the busy
+//! flag would make it acceptable only when there was nothing to act on.
+//!
 //! A separate, unrelated concern: the `Player` itself can be replaced
 //! outright — a live voice change (Task 9) rebuilds the whole engine and
 //! swaps in a new `Player`. That is guarded by a `RwLock` around `Player`,
@@ -97,6 +103,39 @@ impl App {
     /// queueing behind a pending voice-swap write lock.
     pub fn stop(&self) {
         self.player.read().unwrap().stop();
+    }
+
+    /// Toggles pause, returning the resulting paused state.
+    ///
+    /// Deliberately **not** guarded by the busy flag. That flag serializes
+    /// `speak()` calls against each other because `Player::speak` does not
+    /// lock internally; this touches none of that machinery — like
+    /// `stop()`, it reaches the sink through the `Player`'s internal
+    /// `Arc`s and only ever sets an atomic. Taking the busy flag here
+    /// would in fact invert the feature: the flag is *held* for the whole
+    /// duration of the read, so a pause could only ever be accepted when
+    /// there was nothing playing to pause.
+    ///
+    /// A read lock for the same reason `stop()` takes one — see its doc
+    /// comment.
+    ///
+    /// Pausing while nothing is speaking is a no-op that returns `false`
+    /// (see `Player::pause`), so a stray hotkey press cannot park a
+    /// paused, empty audio device in front of the next read.
+    pub fn toggle_pause(&self) -> bool {
+        let player = self.player.read().unwrap();
+        if player.is_paused() {
+            player.resume()
+        } else {
+            player.pause()
+        }
+    }
+
+    /// Whether audio output is currently paused. Ground truth, read
+    /// straight through to the sink — the tray label renders this rather
+    /// than tracking its own copy.
+    pub fn is_paused(&self) -> bool {
+        self.player.read().unwrap().is_paused()
     }
 
     /// Runs the region flow (see `actions::read_region`), guarded so a

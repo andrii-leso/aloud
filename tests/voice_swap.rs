@@ -43,6 +43,13 @@ impl AudioSink for FakeSink {
         0
     }
     fn stop(&self) {}
+    // Never paused in these tests; pause/resume are covered by
+    // `tests/player_pause.rs` against a sink that models them.
+    fn pause(&self) {}
+    fn resume(&self) {}
+    fn is_paused(&self) -> bool {
+        false
+    }
 }
 
 #[test]

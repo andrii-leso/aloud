@@ -21,6 +21,56 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// `LATER_CHUNK_CHARS` or lower the speed floor without revisiting this.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The stall watchdog's state, extracted from `wait_for_drain` so the one
+/// decision that matters — "is this frozen queue a dead device, or a
+/// paused one?" — is unit-testable against a synthetic clock instead of
+/// requiring a test to sit through `STALL_TIMEOUT` of wall time.
+///
+/// Same pattern as `shortcut::plan_apply` and `aloud.rs`'s
+/// `apply_shortcut_with`/`take_probe`: seam out the decision, leave the
+/// I/O loop around it thin.
+pub struct StallWatch {
+    last_queued: usize,
+    last_changed: Instant,
+}
+
+impl StallWatch {
+    pub fn new(queued: usize, now: Instant) -> Self {
+        Self {
+            last_queued: queued,
+            last_changed: now,
+        }
+    }
+
+    /// Records one poll and reports whether the device is presumed dead.
+    ///
+    /// While `paused`, the deadline is carried forward on every tick, so
+    /// time spent paused does not accumulate toward `STALL_TIMEOUT` at
+    /// all. Without this the guard cannot tell a dead device from a
+    /// deliberately paused one — a paused sink's depth is frozen *by
+    /// definition* — and any pause longer than 30s aborted the read with
+    /// "audio device appears stalled".
+    ///
+    /// Note what is deliberately not done here: the timeout is not
+    /// raised. Raising it would weaken the guard for a real dead device
+    /// and still break on a long enough pause. Resuming starts a fresh
+    /// full budget, which is the honest reading — a stall is 30s of no
+    /// progress *while playback is expected*.
+    pub fn observe(&mut self, queued: usize, paused: bool, now: Instant) -> bool {
+        if paused {
+            self.last_queued = queued;
+            self.last_changed = now;
+            return false;
+        }
+        if queued != self.last_queued {
+            self.last_queued = queued;
+            self.last_changed = now;
+            return false;
+        }
+        now.duration_since(self.last_changed) >= STALL_TIMEOUT
+    }
+}
+
 pub struct Player {
     engine: Arc<dyn TtsEngine>,
     sink: Arc<dyn AudioSink>,
@@ -53,7 +103,46 @@ impl Player {
     /// speaking thread is doing.
     pub fn stop(&self) {
         self.stop_flag.store(true, Ordering::SeqCst);
+        // Also clears the paused state — see the `AudioSink::stop`
+        // contract. Stop-while-paused must not leave a sink that
+        // swallows the next utterance.
         self.sink.stop();
+    }
+
+    /// Whether audio output is currently halted mid-utterance.
+    ///
+    /// Delegates to the sink rather than mirroring the state in a local
+    /// flag. There is exactly one source of truth, so no tray label,
+    /// hotkey, or future Now Playing state can drift from what the audio
+    /// device is actually doing — the defect class this app has spent the
+    /// week removing.
+    pub fn is_paused(&self) -> bool {
+        self.sink.is_paused()
+    }
+
+    /// Halts output, keeping every already-synthesised buffer.
+    ///
+    /// **No-op unless something is speaking.** Pausing an idle sink would
+    /// park a paused-and-empty audio device that silently eats the next
+    /// read — the tray item and the hotkey are both reachable at any
+    /// time, so this has to be refused here rather than assumed away.
+    ///
+    /// Like `stop()`, this takes effect even while the speaking thread is
+    /// blocked inside `engine.synthesize()`: it acts on the sink, not on
+    /// the loop. Returns the resulting paused state.
+    pub fn pause(&self) -> bool {
+        if !self.is_speaking() {
+            return false;
+        }
+        self.sink.pause();
+        true
+    }
+
+    /// Resumes from the exact sample `pause()` stopped at. Returns the
+    /// resulting paused state (always `false`).
+    pub fn resume(&self) -> bool {
+        self.sink.resume();
+        false
     }
 
     /// Synthesises sentence-by-sentence and plays each as it is ready, so
@@ -71,6 +160,14 @@ impl Player {
         }
 
         self.stop_flag.store(false, Ordering::SeqCst);
+        // A new utterance never begins paused. `pause()` refuses when
+        // nothing is speaking, but that check and the end of the previous
+        // utterance can interleave: a pause landing just as `run()` drains
+        // its last buffer would leave the sink paused with nothing
+        // playing, and this read would then be silent with a queue depth
+        // that never moves. Clearing it here makes that unrepresentable
+        // rather than merely unlikely.
+        self.sink.resume();
         self.speaking.store(true, Ordering::SeqCst);
         let result = self.run(&sentences, lang, speed);
         self.speaking.store(false, Ordering::SeqCst);
@@ -110,8 +207,7 @@ impl Player {
     /// pragmatic guard against a lost/frozen audio device, which rodio
     /// surfaces no direct signal for through this API.
     fn wait_for_drain(&self, threshold: usize) -> Result<bool> {
-        let mut last_queued = self.sink.queued();
-        let mut last_changed = Instant::now();
+        let mut watch = StallWatch::new(self.sink.queued(), Instant::now());
 
         loop {
             if self.stopped() {
@@ -124,10 +220,7 @@ impl Player {
                 return Ok(false);
             }
 
-            if queued != last_queued {
-                last_queued = queued;
-                last_changed = Instant::now();
-            } else if last_changed.elapsed() >= STALL_TIMEOUT {
+            if watch.observe(queued, self.sink.is_paused(), Instant::now()) {
                 self.sink.stop();
                 anyhow::bail!(
                     "audio device appears stalled: queue depth stuck at {queued} for {STALL_TIMEOUT:?}"

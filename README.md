@@ -14,9 +14,24 @@ Two ways to trigger it:
   menu), or press **Cmd+Shift+A**. This route never touches Accessibility
   or the clipboard — see "Permissions" below for why.
 
+While Aloud is speaking, **Cmd+Shift+P** pauses and resumes it, as does
+the tray's **Pause** / **Resume** item. This is a true pause: playback
+halts mid-sentence and continues from the exact sample, with nothing
+re-read and nothing already synthesised thrown away. Pressing it while
+nothing is speaking does nothing.
+
+It is an ordinary chord, not the keyboard's play/pause **media** key.
+That is deliberate and permanent: media keys are the only path in
+`global-hotkey` that creates a `CGEventTap`, and an active tap from an
+untrusted process is refused outright — measured on this machine, macOS
+26.6 (`docs/media-key-control-research.md` §4). Aloud never asks for
+Accessibility, so it never takes that route. A side benefit is that
+pause keeps working while Spotify or Music has the media keys.
+
 Both the region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
-below.
+below. The pause chord is not yet rebindable in that window; it is read
+from `pause_shortcut` in `settings.json`.
 
 Cmd+Shift+A is Aloud's default shortcut for the Service, shipped in
 `Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
@@ -28,8 +43,10 @@ Read Aloud instead of the app's own binding; rebind one of the two in
 System Settings if that collides with your workflow.
 
 Aloud lives in the menubar only: no Dock icon, and no window until you
-open one yourself. Use the tray icon to trigger a region read, stop
-whatever is currently speaking, open **Settings…**, or quit.
+open one yourself. Use the tray icon to trigger a region read, pause or
+resume it, stop whatever is currently speaking, open **Settings…**, or
+quit. The Pause item names what the click will do, not the state it is
+in: it reads **Resume** exactly while playback is paused.
 
 ## Permissions
 
