@@ -62,33 +62,25 @@ exist at the previous compile — the rebuild above will silently embed a stale 
 Run `cargo clean -p aloud --release` first in that case (see `CLAUDE.md` hard
 constraint 11).
 
-## Launch-at-login is a spike, not a task
+## Launch-at-login — spiked and built (2026-08-10)
 
-Andrii has not asked for this yet, but it's an obvious next want, and the M4 research
-found three separate unknowns stacked on top of each other — do not write it as a
-normal implementation task; spike each unknown against the real machine first:
+All three unknowns were spiked against the real installed bundle on this machine and
+came back green, so the feature shipped: `SMAppService` via `objc2-service-management`
+(`src/login_item/`), a default-off toggle in the settings window, and IPC commands that
+report the OS's live status rather than what was saved.
 
-1. **Whether `SMAppService.mainApp.register()` accepts a self-signed bundle at all is
-   undocumented either way.** Apple's API reference states no certificate requirement,
-   but an Apple DTS engineer's public reply references "Apple-issued identity," and no
-   forum thread covers a self-signed `mainApp` registration specifically. It could fail
-   with an opaque `BTMErrorDomain` error, or it could just work.
-2. **Whether the `NSServices` selection path survives launchd exec'ing the inner binary
-   is untested, and is the single highest-risk unknown.** `tauri-plugin-autostart`'s
-   default LaunchAgent mode (the reason it must not be added as-is — see `CLAUDE.md`)
-   writes `ProgramArguments` pointing at `Contents/MacOS/aloud` directly, bypassing
-   LaunchServices — the mechanism that registers the Service. If autostart is ever built
-   by hand instead, this has to be confirmed by writing the LaunchAgent plist manually,
-   logging out and back in, and checking that Services → Read Aloud still appears.
-3. **Whether tao's unconditional `activateIgnoringOtherApps` call causes a visible focus
-   grab at every login is unverified.** `tao` calls it in
-   `applicationDidFinishLaunching` regardless of how the app was launched, and Tauri
-   does not expose a way to turn it off — that's
-   [tauri#15017](https://github.com/tauri-apps/tauri/issues/15017), open since
-   2026-03-01, greenlit by a maintainer but not merged.
+1. **`SMAppService.mainApp.register()` accepts the self-signed "Aloud Dev" bundle.**
+   `NotFound → register: Ok → Enabled → unregister: Ok → NotRegistered`, on macOS 26.6,
+   with `TeamIdentifier=not set`. No `BTMErrorDomain -98`, no `kSMErrorInvalidSignature`.
+2. **The `NSServices` selection path survives.** `SMAppService` registers the *bundle*
+   and macOS launches it through LaunchServices — not the inner binary, which is what
+   `tauri-plugin-autostart` would have done. Confirmed programmatically with
+   `NSPerformService("Read Aloud")` under a LaunchServices launch.
+3. **No visible focus grab.** tao does call `activateIgnoringOtherApps` unconditionally,
+   but Aloud is `Accessory` with no window at launch, so there is nothing to bring
+   forward. Measured: the frontmost app was unchanged across 20 samples spanning a launch.
 
-Full detail: `docs/M4-platform-research-macos.md`, "What this means for M4" and the
-traps table (items 2, 3, 7).
+Full evidence, the design, and the remaining manual step: `docs/2026-08-10-launch-at-login.md`.
 
 ## M6 (Windows): seven constraint conflicts awaiting an owner decision
 
@@ -145,6 +137,11 @@ Also worth a look in the same sitting: rebind the region shortcut to something n
 confirm the "Saved… press it now to confirm" → "Confirmed" flow (and the 10-second
 timeout path, if you wait it out); switch voice and speed and confirm both apply to a
 read already selected from the tray, not just a subsequent one.
+
+**And the one thing launch-at-login could not settle without you:** switch "Launch Aloud
+at login" on, log out, log back in, and confirm both that the menu-bar icon is there and
+that **⌘⇧A still reads a selection**. Everything short of a real logout says it will
+work; nothing short of it proves it. It ships default off and was left off.
 
 ## Open, lower priority
 

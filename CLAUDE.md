@@ -14,7 +14,9 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 |---|---|
 | Anything at all | [`../../../docs/superpowers/specs/2026-08-08-aloud-tts-reader-design.md`](../../../docs/superpowers/specs/2026-08-08-aloud-tts-reader-design.md) — the design. Seams, platform matrix, measured performance budget, licence obligations. |
 | TTS / voices / engine work | [`../../../docs/capabilities.md`](../../../docs/capabilities.md) §1 (engines, measured numbers) and its licence section. |
-| macOS platform work — tray, settings window, launch-at-login, TCC/signing, packaging | [`docs/M4-platform-research-macos.md`](docs/M4-platform-research-macos.md) — verified/likely/unverified findings and a traps table, built from what M3's first real use got wrong. |
+| macOS platform work — tray, settings window, TCC/signing, packaging | [`docs/M4-platform-research-macos.md`](docs/M4-platform-research-macos.md) — verified/likely/unverified findings and a traps table, built from what M3's first real use got wrong. |
+| Launch at login / `SMAppService` | [`docs/2026-08-10-launch-at-login.md`](docs/2026-08-10-launch-at-login.md) — the spike that settled §2's three open unknowns against this machine (self-signed bundles **are** accepted; the Service survives; no focus grab), then the design built on it. |
+| Pause/resume, media keys, or anything that wants a `CGEventTap` | [`docs/media-key-control-research.md`](docs/media-key-control-research.md) — PAX, 2026-08-10. The `CGEventTap` route is settled *against* us; `MPRemoteCommandCenter` needs no TCC grant. Read it before proposing either, and note the real blocker is that the audio layer cannot pause at all yet. |
 | Windows-side work / M6 | [`docs/M6-platform-research-windows.md`](docs/M6-platform-research-windows.md) — the seven constraint conflicts against Aloud's hard constraints, the manual-test checklist to run on the PC, and [`../../../BKM/PC-Queue/README.md`](../../../BKM/PC-Queue/README.md) for how the PC half actually gets built (brief-driven). |
 | Building, running, or verifying the app; permissions | [`README.md`](README.md) — the dev doc: what it does, how to build (`packaging/make-app.sh`), permissions, known limits. |
 | Anything touching the EULA or selling | Dispatch Rektor. Do not draft licence terms unaided. |
@@ -34,6 +36,7 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 9. **Check `df -h /` before installing toolchains or models, and again after any build.** The M1 Air is small and has run critically low before — it hit 2.3 GB free during the M3 Tauri build.
 10. **Build and test in `--release`, not debug.** `target/debug` costs ~3 GB on top of release's ~2.2 GB and offers nothing here: ONNX inference in a debug build is several times slower, so the timing-sensitive tests are misleading there anyway. A stray `cargo test` (which defaults to debug) recreates the whole 3 GB tree. If you find `target/debug` present and disk is tight, deleting it is safe.
 11. **A new file under `dist/` needs a clean rebuild to actually take effect.** `dist/` is embedded at compile time by `tauri::generate_context!()`, but `cargo` does not watch it for `rerun-if-changed`, and `generate_context!()` cannot track a file that didn't exist at the previous compile. Adding a new file under `dist/` and rebuilding normally therefore silently embeds a **stale** binary — no error, no warning. If you touch `dist/`, run `cargo clean -p aloud --release` before the next build. This cost real time during M4.
+12. **Launch-at-login state lives in the OS, not in `settings.json` — and Aloud never re-registers to "correct" it.** The real state is macOS's Background Task Management store, read via `SMAppService.mainApp.status`; the persisted `launch_at_login` bool is only a record of what the user asked for. The user can switch Aloud off in System Settings → General → Login Items and **Aloud is never notified** — that surfaces as `RequiresApproval`, and re-`register()`ing on it would silently override a deliberate opt-out. So: the settings toggle renders the live status (on **only** for `Enabled`), `set_launch_at_login` returns the OS's read-back status rather than the request, and startup reads-and-reports without ever writing. A toggle that reports intent instead of reality is the exact defect class this app has spent a week removing. Spike evidence and the full design: [`docs/2026-08-10-launch-at-login.md`](docs/2026-08-10-launch-at-login.md).
 
 ---
 
@@ -41,7 +44,7 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 
 - **Tauri 2** (menubar shell, global-shortcut plugin, tray), Rust core, web UI. Packaging on macOS is **hand-assembled**, not the Tauri CLI bundler: `cargo install tauri-cli` drove this M1 Air to 2.0 GB free, so `packaging/make-app.sh` builds `target/Aloud.app` directly (see `README.md`). Do not reach for `cargo tauri build` here. Windows packaging (M6) is undecided — revisit then, it does not inherit this constraint.
 - **Settings window (`dist/`):** hand-written HTML/CSS/JS, no bundler, no `package.json`, no build step — edit the files directly and rebuild the Rust binary (see Hard constraint 11, the `dist/` clean-rebuild trap).
-- **Do not add `tauri-plugin-autostart`.** Read from its source (M4 research): on macOS it offers only LaunchAgent and AppleScript modes, and its default LaunchAgent mode writes `ProgramArguments` pointing at `Contents/MacOS/aloud` — the inner binary — which bypasses LaunchServices, the mechanism that registers the `NSServices` provider. Adopting it as-is would silently kill "Read Aloud". Launch-at-login is not yet built; see `docs/HANDOFF.md`.
+- **Do not add `tauri-plugin-autostart`.** Read from its source (M4 research): on macOS it offers only LaunchAgent and AppleScript modes, and its default LaunchAgent mode writes `ProgramArguments` pointing at `Contents/MacOS/aloud` — the inner binary — which bypasses LaunchServices, the mechanism that registers the `NSServices` provider. Adopting it as-is would silently kill "Read Aloud". Launch-at-login is built instead on **`SMAppService`** via `objc2-service-management` (`src/login_item/`) — see hard constraint 12 and [`docs/2026-08-10-launch-at-login.md`](docs/2026-08-10-launch-at-login.md).
 - **TTS:** Supertonic 3 via its first-party Rust SDK over ONNX Runtime. Defaults **F5** (female) and **M5** (male). 31 languages; `lingua-rs` picks the tag. Kokoro stays wired as the licence-clean fallback.
 - **OCR:** bundled Swift helper → Vision (macOS); `Windows.Media.Ocr` via the `windows` crate (Windows). Never Tesseract.
 - **Model:** 385 MB, downloaded on first run, not shipped in the installer. All ten voice styles together are under 3 MB — ship them all.
@@ -53,7 +56,7 @@ Personal tool for Andrii's two machines. Built to product standards so that sell
 
 | Folder | Purpose |
 |---|---|
-| `src/` | The whole Rust crate: library (text, tts, play, ocr, capture, selection) + binaries |
+| `src/` | The whole Rust crate: library (text, tts, play, ocr, capture, selection, login_item) + binaries |
 | `src/bin/aloud.rs` | The Tauri menubar app |
 | `src/bin/aloud_say.rs` | The CLI |
 | `src/vendor/` | Vendored MIT Supertonic engine — never edit |

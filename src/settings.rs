@@ -33,6 +33,25 @@ pub struct Settings {
     pub region_shortcut: String,
     pub voice: String,
     pub speed: f32,
+    /// Whether the user has asked Aloud to start at login.
+    ///
+    /// Unlike every other field here, this one is **not** the source of
+    /// truth for the thing it names. The real state lives in macOS's
+    /// Background Task Management store, is readable via
+    /// `SMAppService.mainApp.status`, and can be changed behind Aloud's
+    /// back in System Settings → General → Login Items. So this records
+    /// what the user asked Aloud for; `crate::login_item` reports what
+    /// is actually true, and the settings window renders the latter.
+    ///
+    /// Kept anyway because the two diverging is worth noticing and
+    /// saying out loud (see `setup()` in `src/bin/aloud.rs`) — but it
+    /// deliberately never drives a re-registration, since the commonest
+    /// cause of divergence is the user deliberately switching Aloud off
+    /// in System Settings.
+    ///
+    /// The container-level `#[serde(default)]` above is what lets a
+    /// `settings.json` written before this field existed still load.
+    pub launch_at_login: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +60,9 @@ impl Default for Settings {
             region_shortcut: DEFAULT_SHORTCUT.to_string(),
             voice: DEFAULT_VOICE.to_string(),
             speed: DEFAULT_SPEED,
+            // Off. Building the feature must not turn it on for anyone,
+            // least of all silently on the machine it was built on.
+            launch_at_login: false,
         }
     }
 }
