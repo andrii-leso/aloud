@@ -734,12 +734,14 @@ fn open_settings_window(app: &tauri::AppHandle) {
     .title("Aloud Settings")
     // Must match tauri.conf.json's `settings` window, which is what
     // every ordinary open actually uses (this branch only runs if the
-    // config-created window was destroyed). Measured at 480px wide, the
-    // page is 618px tall in its ordinary state and 710px with the
-    // launch-at-login failure note and its Login Items button showing;
-    // the window is not resizable, so anything shorter than this puts
-    // the last section — or a failure message — below the fold.
-    .inner_size(480.0, 700.0)
+    // config-created window was destroyed). Measured in a 480px
+    // border-box (the window's inner width): the page is 629px tall in
+    // its ordinary state and 682px with the launch-at-login failure note
+    // and its Login Items button showing. The window is not resizable,
+    // so anything shorter puts the last section — or a failure message —
+    // below a fold nobody can scroll past comfortably. This is inner
+    // size; the title bar adds ~28px on screen.
+    .inner_size(480.0, 690.0)
     .resizable(false)
     .decorations(true)
     .center()

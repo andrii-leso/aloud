@@ -10,7 +10,7 @@
         "label": "settings",
         "title": "Aloud Settings",
         "width": 480,
-        "height": 700,
+        "height": 690,
         "resizable": false,
         "visible": false,
         "decorations": true,

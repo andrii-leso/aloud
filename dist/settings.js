@@ -268,23 +268,69 @@ function showLoginItem(view) {
   openLoginItems.hidden = !view.note;
 }
 
+// True while a set_launch_at_login round trip is in flight. Registering
+// can make macOS post its own "added to Login Items" notification, which
+// is enough to bounce focus away and back — and the refresh below fires
+// on that. Without this guard that refresh can read the status mid-change
+// and paint a stale answer over the real result.
+let loginItemBusy = false;
+
 launchToggle.addEventListener("change", async () => {
   const wanted = launchToggle.checked;
   setStatus(launchStatus, wanted ? "Registering…" : "Removing…", null);
+  loginItemBusy = true;
   try {
     showLoginItem(await invoke("set_launch_at_login", { enabled: wanted }));
   } catch (err) {
-    // The OS refused, so nothing was saved. Report that, then put the
+    // The request failed, so nothing was saved. Report that, then put the
     // checkbox back to what is actually true — leaving it showing the
     // request would be the exact "toggle lies about system state" defect
     // this section is built to avoid.
-    setStatus(launchStatus, String(err), "error");
     const view = await invoke("get_login_item_status").catch(() => null);
     if (view) {
+      setStatus(launchStatus, String(err), "error");
       launchToggle.checked = view.on;
+      // Same rule as showLoginItem: this button is only the fix for the
+      // states macOS says the user has to resolve. Showing it for, say, a
+      // failed disk write points them at a pane that cannot help.
+      openLoginItems.hidden = !view.note;
+    } else {
+      // Even the read-back failed, so Aloud does not know the system
+      // state. Return the checkbox to what it showed before the click and
+      // say plainly that it is unconfirmed — the alternative is leaving a
+      // checkbox asserting something nothing has verified.
+      launchToggle.checked = !wanted;
+      setStatus(
+        launchStatus,
+        String(err) +
+          " — and Aloud could not read back the current state. Check " +
+          "System Settings → General → Login Items.",
+        "error"
+      );
       openLoginItems.hidden = false;
     }
+  } finally {
+    loginItemBusy = false;
   }
+});
+
+// Re-read whenever the window comes back to the front. Reading only on
+// load is not enough: this window can sit open while the user changes the
+// login item in System Settings — the button below sends them there — and
+// macOS never notifies Aloud, so the checkbox would keep showing the
+// state as of whenever the window happened to open.
+async function refreshLoginItem() {
+  if (loginItemBusy) return;
+  const view = await invoke("get_login_item_status").catch(() => null);
+  if (view) showLoginItem(view);
+}
+
+// Both, deliberately: `focus` covers returning from another app, and
+// `visibilitychange` covers the window being re-shown after being hidden,
+// which need not move DOM focus. A duplicate refresh costs one cheap read.
+window.addEventListener("focus", refreshLoginItem);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshLoginItem();
 });
 
 openLoginItems.addEventListener("click", () => {

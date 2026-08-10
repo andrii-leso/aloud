@@ -116,9 +116,10 @@ This one setting is **not** stored in `settings.json` in any meaningful
 sense. The real state lives in macOS's Background Task Management store,
 survives deleting the app, and can be changed in **System Settings →
 General → Login Items** without Aloud being told. So the checkbox shows
-what the OS currently reports, re-read every time the window opens: turn
-Aloud off in Login Items and the checkbox will be off the next time you
-look. If macOS says approval is needed, the window says so and offers a
+what the OS currently reports, re-read whenever the window opens *or comes
+back to the front*: switch Aloud off in Login Items, return to the
+settings window, and the checkbox will already be off — including if you
+left it open the whole time. If macOS says approval is needed, the window says so and offers a
 button straight to that pane — Aloud cannot grant its own consent, and
 re-registering behind your back to "fix" it would override a deliberate
 choice, so it never does. See `docs/2026-08-10-launch-at-login.md`.

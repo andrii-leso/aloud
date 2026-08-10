@@ -57,13 +57,15 @@ Two secondary observations, both worth knowing before trusting the docs:
   not produce it. The tolerant branch in `login_item::apply` is therefore
   defensive against documented-but-unobserved behaviour, not a path this
   machine exercises.
-- **`unregister()` leaves the status at `NotRegistered`, not `NotFound`.**
-  The record persists, disabled — which matches Apple's "the state is
-  persisted to preserve user intent". `unregister()` *is* the API's own
-  undo; `sfltool resetbtm` + reboot would be needed to erase the record
-  entirely, and that was judged disproportionate to the residue. **The
-  machine was left with the login item off** (confirmed by the app's own
-  startup log line, below).
+- **`unregister()` leaves the status at `NotRegistered`, not `NotFound`** —
+  the record persists, disabled, matching Apple's "the state is persisted
+  to preserve user intent". `unregister()` *is* the API's own undo, and
+  `sfltool resetbtm` + reboot was judged disproportionate to that residue.
+  **Follow-up, same day:** after a reinstall the app's own startup read
+  reported `NotFound`, i.e. the disabled record did not persist
+  indefinitely on macOS 26.6 — so the residue was even smaller than
+  assumed. **The machine was left with the login item off**, verified from
+  the OS rather than from `settings.json`.
 
 ### Unknown 2 — does the `NSServices` selection path survive?
 
@@ -164,9 +166,19 @@ Settings".
 So:
 
 - The settings window renders `SMAppService.mainApp.status`, read live on
-  every window load and after every change. `LoginItemStatus::is_on()` is
-  true for **`Enabled` only** — a user who switched Aloud off in System
-  Settings sees the toggle off.
+  every window load, after every change, **and every time the window comes
+  back to the front** (`focus` + `visibilitychange`).
+  `LoginItemStatus::is_on()` is true for **`Enabled` only** — a user who
+  switched Aloud off in System Settings sees the toggle off.
+
+  The front-again re-read is not belt-and-braces; without it this section
+  walks the user straight into the defect it exists to prevent. Click
+  "Open Login Items…", switch Aloud off in System Settings, come back to
+  the still-open window: macOS never notified Aloud, so a load-time-only
+  read would leave the checkbox showing "on". A `set_launch_at_login`
+  round trip suppresses the refresh while it is in flight (`loginItemBusy`),
+  because registering can make macOS post its own notification banner and
+  bounce focus, which would otherwise read status mid-change.
 - `set_launch_at_login` returns the OS's **read-back status**, never the
   request. `register()` returning `Ok` is not proof the app will launch:
   if consent was previously revoked the real status is `RequiresApproval`,
@@ -186,12 +198,31 @@ above can be noticed and said out loud rather than silently papered over.
 ### Settings window height
 
 The window is fixed at 480 px and **not resizable**, so a new section can
-push content below a fold nobody can scroll past comfortably. Measured in
-a browser at 480 px: the page is **618 px** tall in its ordinary state and
-**710 px** with the `RequiresApproval` note and its Login Items button
-showing. `height` went 560 → **700** in both `tauri.conf.json` and
-`open_settings_window`'s builder fallback (the two must agree; the builder
-branch only runs if the config-created window was destroyed).
+push content below a fold nobody can scroll past comfortably — including a
+failure message, which is the one thing that must never be below it.
+
+Measured inside an iframe of **exactly 480 px border-box** (the window's
+inner width): the page is **629 px** tall in its ordinary state and
+**682 px** with the `RequiresApproval` note and its Login Items button
+showing. `height` went 560 → **690** in both `tauri.conf.json` and
+`open_settings_window`'s builder fallback — the two must agree, since the
+builder branch runs only if the config-created window was destroyed. That
+is inner size; the title bar adds ~28 px on screen, so ~718 px against
+~931 pt usable on this M1 Air.
+
+Two corrections worth recording, because both were wrong in the first pass:
+
+- **The first measurement (618 / 710) was taken at the wrong width.** The
+  browser pane's viewport resize had not applied — `innerHeight` still
+  reported 1143 — so `document.body.scrollHeight` was measured with the
+  body at some other width, and the text wrapped differently. Sizing the
+  window to 700 against a claimed 710 px worst case was incoherent on its
+  face and should have been caught there. The rig above pins the width
+  explicitly instead of trusting the viewport.
+- **The section said the same thing three times** — the `<h2>`, a hint
+  line, and the checkbox label. The hint is gone; the heading and the
+  label carry it. That is where ~10 px of the height came back from, and
+  it is the right place to take it from.
 
 ---
 
@@ -244,9 +275,24 @@ Accessibility to work around that is a standing project refusal. So:
    login." confirmation, and — if macOS ever reports `RequiresApproval` —
    the note plus the "Open Login Items…" button. The layout was measured in
    a browser, not seen in the real window.
-4. The settings window is now 700 px tall rather than 560. If that feels
-   wrong on this display, say so; it was sized to keep a failure message
-   above the fold.
+4. The settings window is now 690 px tall rather than 560 (plus ~28 px of
+   title bar). If that feels wrong on this display, say so; it was sized
+   to keep a failure message above the fold.
+
+## Known follow-ups, deliberately not done here
+
+- **No `LSMinimumSystemVersion` gate.** `SMAppService` is macOS 13+, and on
+  an older system the objc2 class lookup would panic rather than degrade.
+  Zero practical risk on a two-machine personal tool both running macOS 26,
+  and adding a version gate now is more machinery than the risk earns — but
+  it becomes real the moment this ships to anyone else. Log it against
+  distribution, not against this change.
+- **The "saved to disk after the OS accepted" failure message is generic.**
+  If `persist` fails after `register()` succeeded, the user sees a raw io
+  error rather than "the change took effect but could not be saved". The
+  window recovers correctly (it re-reads and shows the true OS state), and
+  `set_shortcut`/`set_voice`/`set_speed` all share the same shape, so this
+  is a whole-file improvement rather than something to special-case here.
 
 ## Undoing this entirely
 

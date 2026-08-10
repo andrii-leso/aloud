@@ -917,7 +917,17 @@ produces no error, no log, and no visible symptom other than "it doesn't work".
   whose menu bar is never displayed — the mechanism is `NSApplication.sendEvent:` dispatch,
   which does not require the bar to be visible. **Smoke-test it manually in M4** rather than
   assuming.
-- 🚩 **VERIFIED — launch-at-login will make Aloud steal focus at every login, and Tauri
+- ✅ **SETTLED 2026-08-10 — no observable focus grab. The prediction in the item below was
+  wrong; its mechanism was right.** The call really is unconditional and really is not
+  wired through Tauri — all of that re-verified in `tao` 0.35.3 — but it runs *after*
+  `apply_activation_policy`, and Aloud is `ActivationPolicy::Accessory` with no window at
+  launch, so there is nothing to bring forward. Measured, not argued: the frontmost app
+  was sampled every 500 ms for 10 s across a launch (`lsappinfo front`) and never changed.
+  So the trap is real for a *regular*-policy app or one that opens a window at launch —
+  neither of which Aloud is. Evidence: [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md).
+  The item below is preserved as written on 2026-08-09.
+- 🚩 **VERIFIED as of 2026-08-09; the consequence was DISPROVEN 2026-08-10, see above —
+  launch-at-login will make Aloud steal focus at every login, and Tauri
   gives you no way to turn it off.** `tao` sets `activate_ignoring_other_apps: true` by
   default (`tao-0.35.3/src/platform_impl/macos/app_delegate.rs:107`) and calls
   `ns_app.activateIgnoringOtherApps(ignore)` unconditionally in
@@ -977,11 +987,17 @@ produces no error, no log, and no visible symptom other than "it doesn't work".
 1. **Do not touch `Builder::menu()` or `enable_macos_default_menu`.** Tauri's default app
    menu is the only reason ⌘C/⌘V will work in the settings window, and removing it produces
    no error.
-2. **Treat launch-at-login as a spike, not a task.** Three separate unknowns stack on it:
-   whether `SMAppService` accepts a self-signed bundle, whether the `NSServices` path
-   survives a launchd-exec of the inner binary, and whether tao's unconditional
-   `activateIgnoringOtherApps` produces a visible focus grab at login. Verify each on the
-   real machine before writing implementation tasks.
+2. **~~Treat launch-at-login as a spike, not a task.~~ DONE 2026-08-10 — the spike was run
+   and all three unknowns came back green; the feature is built.** For the record, the
+   three were: whether `SMAppService` accepts a self-signed bundle (**it does**), whether
+   the `NSServices` path survives (**it does — `SMAppService` registers the bundle and
+   macOS launches it through LaunchServices, unlike the LaunchAgent-exec-the-inner-binary
+   route this worried about**), and whether tao's unconditional
+   `activateIgnoringOtherApps` produces a visible focus grab at login (**it does not, for
+   an accessory app with no window**). Do not re-litigate these; read
+   [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md) and the SETTLED blocks
+   in §2 and §5 above. One thing genuinely remains unverified: a real logout/login, which
+   needs the owner.
 3. **Add an identifier-consistency assertion to `packaging/make-app.sh`** — read `identifier`
    out of `tauri.conf.json` and fail the build if it differs from the `CFBundleIdentifier`
    being written. Same shape as the existing `NSServices` post-merge check, which already
@@ -997,15 +1013,15 @@ produces no error, no log, and no visible symptom other than "it doesn't work".
 | # | Trap | Symptom | Evidence |
 |---|---|---|---|
 | 1 | `register()` returns `Ok(())` for a chord owned by macOS or another app | Rebound shortcut simply never fires; UI says "saved" | `global-hotkey` passes `inOptions = 0`; `CarbonEvents.h`: *"it is not an error to register the same hotkey in multiple processes"* |
-| 2 | `SMAppService.mainApp.register()` on a self-signed bundle — **unproven** | `BTMErrorDomain -98` / `failed to construct identifier`, or a login item that never launches | Apple documents no CA requirement; DTS on record says "Apple-issued identity"; no thread covers self-signed `mainApp` |
+| 2 | ~~`SMAppService.mainApp.register()` on a self-signed bundle — **unproven**~~ **NOT A TRAP — spiked 2026-08-10, it works** | None. `NotFound → register: Ok → Enabled → unregister: Ok → NotRegistered` on macOS 26.6, `TeamIdentifier=not set`. No `BTMErrorDomain -98` | Measured on this machine against the real `/Applications/Aloud.app`: [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md). Kept as a row so nobody re-opens it |
 | 3 | Autostart LaunchAgent execs `Contents/MacOS/aloud`, bypassing LaunchServices | App starts at login but **Services → Read Aloud** may vanish | Plugin applies the `.app`-path fix only in AppleScript mode; README documents the Service needs an installed bundle |
 | 4 | `tao::set_focus()` is a no-op on a non-visible window | Settings window opens behind everything, unfocused | `tao-0.35.3/.../window.rs:677-685` |
 | 5 | Losing Tauri's default app menu kills ⌘C/⌘V in the settings window | Right-click paste works, keyboard paste doesn't | tauri#1055; `tauri-2.11.5/src/menu/menu.rs:214-227`, `app.rs:1620` |
 | 6 | Ad-hoc signing fallback re-keys the DR to the cdhash | Screen Recording silently dead after every rebuild, while System Settings still shows it enabled | TN3127; already cost M3 a session; `make-app.sh` still *warns* rather than failing |
-| 7 | tao calls `activateIgnoringOtherApps` unconditionally at launch | App grabs focus at every login once autostart is on | `tao-0.35.3/.../app_delegate.rs:107` + `app_state.rs:291-293`; tauri#15017 not landed |
+| 7 | tao calls `activateIgnoringOtherApps` unconditionally at launch — **real, but harmless for Aloud (measured 2026-08-10)** | ~~App grabs focus at every login once autostart is on~~ **No observable grab**: it runs after the policy is set to `Accessory`, and there is no window at launch to bring forward. Would bite a regular-policy app, or Aloud if it ever opens a window at startup | `tao-0.35.3/.../app_delegate.rs:107` + `app_state.rs:291-293`; tauri#15017 still not landed. Frontmost app unchanged across 20 samples spanning a launch: [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md) |
 | 8 | Media keys are the one path that creates a `CGEventTap` | An Accessibility/Input-Monitoring prompt appears in an app that promises never to ask | `global-hotkey-0.8.0/.../macos/mod.rs:140-147, 206-213` |
 | 9 | `auto-launch`'s `is_enabled()` is a file-existence check | Toggle shows "on" after the user turned it off in System Settings | `auto-launch` 0.5.0 `src/macos.rs` |
-| 10 | `SMAppService` registration persists after the app is deleted | Stale enabled Login Items row; re-register fails confusingly | Apple DTS thread 707482; `sfltool resetbtm` |
+| 10 | `SMAppService` registration persists after the app is deleted | Stale enabled Login Items row; re-register fails confusingly. **Observed 2026-08-10:** a normal `unregister()` leaves the status at `NotRegistered`, not `NotFound` — the record survives, disabled. That is the supported off state; only `sfltool resetbtm` + reboot erases it, and that resets every app on the machine | Apple DTS thread 707482; `sfltool resetbtm`; [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md) |
 | 11 | `unregister()` on an unregistered chord returns `Ok(())` | Cleanup appears to succeed while the old chord stays live | `global-hotkey-0.8.0/.../macos/mod.rs:163-165` |
 | 12 | `is_registered()` never reports other apps | "Available" shown for a chord that is taken | Plugin doc comment, `lib.rs:229-231` |
 | 13 | Bundle identifier hard-coded in two files | User config silently written to a different directory | `tauri.conf.json` vs `packaging/make-app.sh`; nothing cross-checks |
