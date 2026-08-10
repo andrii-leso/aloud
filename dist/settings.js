@@ -29,21 +29,33 @@ const MODIFIERS = new Set([
 ]);
 
 // Handle of the pending liveness-probe timeout (see beginProbe below), or
-// null when no probe is outstanding. Module-level like `recording` — this
-// whole file is reloaded fresh every time the settings window is
+// null once it has fired or been cleared. Module-level like `recording` —
+// this whole file is reloaded fresh every time the settings window is
 // (re)created, so there is nothing to reset on open.
 let probeTimer = null;
+
+// Whether the Rust-side liveness probe (PROBE_ACTIVE) is currently armed
+// from this page's point of view. Kept separate from `probeTimer`: the
+// 10s timer now fires and clears itself well before the probe should stop
+// listening (see beginProbe — a timeout is a non-event, not a verdict, so
+// it leaves PROBE_ACTIVE armed instead of calling end_probe), so
+// `probeTimer !== null` alone is no longer a reliable stand-in for "is a
+// probe outstanding".
+let probeArmed = false;
 
 function startRecording() {
   // Starting a new recording abandons any chord that was just saved and
   // is still waiting on a press to confirm it — clear that probe rather
-  // than leaving it to time out on its own 10s later, after the user has
-  // already moved on to a different chord. Mirrors clearing on Escape,
-  // success, and window close: every way of leaving the "waiting to
-  // confirm" state disarms the probe.
-  if (probeTimer !== null) {
+  // than leaving it armed to swallow a press meant for the new chord.
+  // This is also what disarms it on Escape: Escape only reaches the
+  // keydown handler below while `recording` is true, and `recording` is
+  // only ever set true here, so any Escape path already passed through
+  // this same guard on the way in. Window close is handled independently,
+  // in Rust, on CloseRequested.
+  if (probeArmed) {
     clearTimeout(probeTimer);
     probeTimer = null;
+    probeArmed = false;
     invoke("end_probe");
   }
   recording = true;
@@ -66,17 +78,34 @@ async function stopRecording(restoreLabel) {
 // honest confirmation available.
 async function beginProbe() {
   await invoke("begin_probe");
+  probeArmed = true;
   clearTimeout(probeTimer);
-  // Ten seconds is long enough to reach for a chord and short enough
-  // that a forgotten window does not swallow a real hotkey press later.
-  probeTimer = setTimeout(async () => {
+  // Ten seconds is enough to reach for a chord without "Saved. Press it
+  // now…" sitting on screen forever. It is NOT a verdict: macOS registers
+  // hotkeys non-exclusively, so a chord already owned by another app still
+  // registers with Ok(()) and the press is silently shadowed afterwards —
+  // there is no API that reports that contention (see
+  // docs/M4-platform-research-macos.md §3, "Detecting 'that chord is
+  // taken'"). All this timeout actually knows is that no press has
+  // arrived *yet* — and the far more likely reason, given the user is
+  // looking at this settings window and not their keyboard, is simply
+  // that they have not pressed it. So the message states both
+  // explanations, likelier one first, instead of asserting a diagnosis
+  // Aloud has no evidence for. Critically, it also leaves PROBE_ACTIVE
+  // armed rather than calling end_probe: a press arriving after the 10s
+  // mark still confirms the chord and replaces this message (see the
+  // probe-fired listener below). The probe is disarmed instead by
+  // starting a new recording (startRecording, above) or by closing the
+  // window (Rust-side, on CloseRequested) — never left armed past either
+  // of those.
+  probeTimer = setTimeout(() => {
     probeTimer = null;
-    await invoke("end_probe");
     setStatus(
       chordStatus,
-      "Aloud never saw that shortcut. Another app is probably using it — " +
-        "macOS does not report this, so trying a different one is the only fix.",
-      "error"
+      "Aloud has not seen that shortcut yet. Press it now to confirm — " +
+        "if you already did, another app is probably using it (macOS " +
+        "does not report this, so a different chord is the only fix).",
+      null
     );
   }, 10000);
 }
@@ -84,6 +113,7 @@ async function beginProbe() {
 window.__TAURI__.event.listen("aloud://probe-fired", () => {
   clearTimeout(probeTimer);
   probeTimer = null;
+  probeArmed = false;
   setStatus(chordStatus, "Confirmed — that shortcut works.", "ok");
 });
 
@@ -133,8 +163,8 @@ window.addEventListener("keydown", async (e) => {
   // and only the most recently assigned `probeTimer` handle ever gets
   // cleared (by a real confirmation or by starting a new recording). The
   // orphaned first timer keeps running regardless and, ~10s after ITS
-  // start, overwrites a genuine "Confirmed" message with the false
-  // "never saw that shortcut" error. Flipping `recording` false here,
+  // start, overwrites a genuine "Confirmed" message with the stale
+  // "has not seen that shortcut yet" status. Flipping `recording` false here,
   // before the await, closes that window: a repeat keydown sees
   // `recording === false` at the top of this handler and returns
   // immediately, never re-entering this block. `stopRecording()` below
