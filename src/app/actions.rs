@@ -18,20 +18,21 @@
 
 use crate::capture::RegionSelector;
 use crate::ocr::{fix_confusions, OcrEngine};
-use crate::play::player::Player;
+use crate::play::player::{Player, SpeakEnd};
 use crate::text::detect::detect_lang;
 use crate::text::normalize::normalize_ocr;
 use anyhow::Result;
 use std::path::Path;
 
 /// What a completed `read_region` attempt actually did. `Player::speak`
-/// and permission/OCR failures are unambiguous (an `Err`), but the two
+/// and permission/OCR failures are unambiguous (an `Err`), but the
 /// success paths need to stay distinguishable to the caller: a deliberate
-/// cancel (Escape) must never surface a notification, while "captured
-/// something but found no text" is worth telling the user about — see the
-/// notification handling in `src/bin/aloud.rs`. Collapsing both into a
-/// bare `Ok(())`, as this used to do, made that distinction impossible
-/// downstream.
+/// cancel (Escape) must never surface a notification, "captured something
+/// but found no text" is worth telling the user about, and a read that was
+/// displaced must not report completion and reset the status on behalf of
+/// the read that replaced it — see the notification handling in
+/// `src/bin/aloud.rs`. Collapsing them into a bare `Ok(())`, as this used
+/// to do, made those distinctions impossible downstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// The user pressed Escape. Silent, on purpose.
@@ -40,8 +41,14 @@ pub enum Outcome {
     /// usable text.
     Empty,
     /// Text was normalized, a language was detected, and `Player::speak`
-    /// was called.
+    /// ran to the end of the passage.
     Spoke,
+    /// Speaking began but a `stop()` cut it short — a ⌘⇧A takeover, or the
+    /// tray's Stop. Not an error (the stop was asked for), but not
+    /// `Spoke` either: reporting it as `Spoke` had the displaced read log
+    /// "completed" and reset the tray status while its replacement was
+    /// already speaking.
+    Interrupted,
 }
 
 /// Deletes the wrapped path when dropped — on ordinary return, on an
@@ -63,7 +70,8 @@ impl Drop for DeleteOnDrop<'_> {
 /// a deliberate cancel, so this returns `Ok(Outcome::Cancelled)`, not an
 /// error -> `ocr.recognise()` -> `fix_confusions` -> `normalize_ocr` -> an
 /// empty result means nothing worth speaking, returns `Ok(Outcome::Empty)`
-/// -> `detect_lang` -> `player.speak()` -> `Ok(Outcome::Spoke)`.
+/// -> `detect_lang` -> `player.speak()` -> `Ok(Outcome::Spoke)`, or
+/// `Ok(Outcome::Interrupted)` if a `stop()` cut it short.
 ///
 /// `fix_confusions` runs here, between OCR and normalization, and nowhere
 /// else — it corrects OCR misreads (Vision's lowercase `l` for uppercase
@@ -106,9 +114,38 @@ pub fn read_region(
         normalized.chars().count()
     );
     crate::log_line!("region flow: speak started");
-    player.speak(&normalized, &lang, speed)?;
-    crate::log_line!("region flow: speak finished");
-    Ok(Outcome::Spoke)
+    match player.speak(&normalized, &lang, speed)? {
+        SpeakEnd::Completed => {
+            crate::log_line!("region flow: speak finished");
+            Ok(Outcome::Spoke)
+        }
+        SpeakEnd::Interrupted => {
+            crate::log_line!("region flow: speak was stopped before the end");
+            Ok(Outcome::Interrupted)
+        }
+    }
+}
+
+/// The normalized form of a delivered selection, or `None` when there is
+/// nothing left worth speaking.
+///
+/// Split out of `speak_selection` so a caller can find that out **before**
+/// it commits to anything irreversible. `App::speak_selection` needs
+/// exactly that: a delivery that normalizes to nothing must not silence
+/// the read in flight on its way to speaking nothing.
+///
+/// Reaching this with an empty result is not a freak case that
+/// `selection_worth_speaking` already screens out. That screen only
+/// rejects text with no non-whitespace character at all, whereas
+/// `normalize_ocr` drops every short all-digit block once a selection has
+/// more than one `"\n\n"`-separated block — so `"42\n\n"` (a numbered-list
+/// marker with the trailing blank line the drag picked up), `"2024\n\n2025"`
+/// or two page numbers caught across a page break all arrive as perfectly
+/// valid deliveries and normalize to nothing. The normalizer's escape
+/// hatch for a bare number preserves only the *single*-block case.
+pub fn speakable_selection(text: &str) -> Option<String> {
+    let normalized = normalize_ocr(text);
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 /// Speaks text that has already been extracted. No capture, no OCR, no
@@ -116,20 +153,29 @@ pub fn read_region(
 ///
 /// An empty (or whitespace-only) result after normalization means nothing
 /// worth speaking, and returns silently rather than as an error.
-pub fn speak_selection(text: &str, player: &Player, speed: f32) -> Result<()> {
-    let normalized = normalize_ocr(text);
-    if normalized.is_empty() {
+pub fn speak_selection(text: &str, player: &Player, speed: f32) -> Result<SpeakEnd> {
+    let Some(normalized) = speakable_selection(text) else {
         crate::log_line!("selection flow: normalized text is empty, nothing to speak");
-        return Ok(());
-    }
+        return Ok(SpeakEnd::Completed);
+    };
+    speak_normalized(&normalized, player, speed)
+}
 
-    let lang = detect_lang(&normalized);
+/// The tail of `speak_selection`, for a caller that has already run
+/// `speakable_selection` and does not want the work done twice.
+pub fn speak_normalized(normalized: &str, player: &Player, speed: f32) -> Result<SpeakEnd> {
+    let lang = detect_lang(normalized);
     crate::log_line!(
         "selection flow: detected language={lang}, normalized length={} chars",
         normalized.chars().count()
     );
     crate::log_line!("selection flow: speak started");
-    player.speak(&normalized, &lang, speed)?;
-    crate::log_line!("selection flow: speak finished");
-    Ok(())
+    let end = player.speak(normalized, &lang, speed)?;
+    match end {
+        SpeakEnd::Completed => crate::log_line!("selection flow: speak finished"),
+        SpeakEnd::Interrupted => {
+            crate::log_line!("selection flow: speak was stopped before the end")
+        }
+    }
+    Ok(end)
 }

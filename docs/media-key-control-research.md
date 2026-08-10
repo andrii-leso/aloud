@@ -220,6 +220,16 @@ reconsider it.**
 
 ## 5. Does pause/resume even exist in the audio layer? — no, and this is the real work
 
+> **SUPERSEDED 2026-08-10 — this section's premise no longer holds. Phase 1 built it.**
+> Pause/resume now exists behind the `AudioSink` seam, the stall-guard trap named below is
+> fixed, and both are shipped with an ordinary `Cmd+Shift+P` hotkey and a tray item. Every
+> prediction in this section held up under implementation, including the 30s stall trap, which
+> was reproduced as a failing test before being fixed. The section is kept as written — it was
+> the research that motivated the work — but read
+> [`2026-08-10-pause-resume-phase1.md`](2026-08-10-pause-resume-phase1.md) for what was actually
+> built and what it measured. §1-§4 and §6 are unaffected; the media-key half of §1/§2 remains
+> unbuilt and still gated on the untested Spotify hand-back behaviour.
+
 - **VERIFIED — `rodio` 0.22.2 supports it.** `src/player.rs` on the exact vendored version:
   `pause()` (*"Pauses playback of this player. No effect if already paused. A paused sink can be
   resumed with `play()`"*), `play()` (*"Resumes playback of a paused player"*), and `is_paused()`.
@@ -302,7 +312,11 @@ permanently hijacks the key, but **whether releasing hands control back to Spoti
 dead (possibly launching Music.app) is UNVERIFIED**, and that is the one thing that would make this
 worse than not having the feature.
 
-**4. The cheap alternative, and the suggested order.** Do the §5 audio-layer pause/resume first —
+**4. The cheap alternative, and the suggested order.** ✅ **Done 2026-08-10 (Phase 1)** — the
+audio-layer work, the stall-guard fix, the ordinary hotkey and the tray item all shipped; see
+[`2026-08-10-pause-resume-phase1.md`](2026-08-10-pause-resume-phase1.md). The
+`MPRemoteCommandCenter` step below remains open and still gated on the §2 hand-back test. Original
+recommendation follows. Do the §5 audio-layer pause/resume first —
 it is required by every option, carries no platform risk, and includes a real latent bug (the 30s
 stall guard aborting any paused read). Ship it behind an ordinary global hotkey plus a tray
 Pause/Resume item: no new framework, no TCC, no Now Playing arbitration, and it keeps working while

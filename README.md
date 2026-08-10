@@ -14,9 +14,49 @@ Two ways to trigger it:
   menu), or press **Cmd+Shift+A**. This route never touches Accessibility
   or the clipboard — see "Permissions" below for why.
 
+`Cmd+Shift+A` is a play/pause toggle, not just a "read this":
+
+| you press it… | what happens |
+|---|---|
+| with text selected, nothing playing | it reads that selection |
+| again, same text still selected | it **pauses** |
+| again | it **resumes**, from the exact word it stopped on |
+| with *different* text selected | it stops the current read and starts the new one |
+
+Nothing to remember and no second key: the text you have selected is how
+Aloud knows which of those you meant. The same passage means "toggle
+this"; a different passage means "read this instead". macOS will not
+invoke the Service with nothing selected, so the key simply does not fire
+in that case.
+
+Two details worth knowing. Leading and trailing whitespace is ignored
+when comparing, so a slightly sloppy re-selection still counts as "the
+same text" — but a difference *inside* the selection (different
+indentation, say) counts as different text and starts a new read. And if
+you happen to select the identical words somewhere else, Aloud reads that
+as the same text and toggles rather than restarting; there is no way for
+it to tell those apart, and guessing would be worse.
+
+While Aloud is speaking, **Cmd+Shift+P** pauses and resumes it, as does
+the tray's **Pause** / **Resume** item. This is a true pause: playback
+halts mid-sentence and continues from the exact sample, with nothing
+re-read and nothing already synthesised thrown away. Pressing it while
+nothing is speaking does nothing. `Cmd+Shift+A`'s toggle is the same
+pause, reached differently — the tray item reads **Resume** whichever one
+paused it.
+
+It is an ordinary chord, not the keyboard's play/pause **media** key.
+That is deliberate and permanent: media keys are the only path in
+`global-hotkey` that creates a `CGEventTap`, and an active tap from an
+untrusted process is refused outright — measured on this machine, macOS
+26.6 (`docs/media-key-control-research.md` §4). Aloud never asks for
+Accessibility, so it never takes that route. A side benefit is that
+pause keeps working while Spotify or Music has the media keys.
+
 Both the region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
-below.
+below. The pause chord is not yet rebindable in that window; it is read
+from `pause_shortcut` in `settings.json`.
 
 Cmd+Shift+A is Aloud's default shortcut for the Service, shipped in
 `Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
@@ -28,8 +68,11 @@ Read Aloud instead of the app's own binding; rebind one of the two in
 System Settings if that collides with your workflow.
 
 Aloud lives in the menubar only: no Dock icon, and no window until you
-open one yourself. Use the tray icon to trigger a region read, stop
-whatever is currently speaking, open **Settings…**, or quit.
+open one yourself. Use the tray icon to trigger a region read, pause or
+resume it, stop whatever is currently speaking, open **Settings…**, or
+quit. The Pause item names what the click will do, not the state it is
+in: it reads **Resume** exactly while playback is paused, whether it was
+`Cmd+Shift+P`, `Cmd+Shift+A` or the item itself that paused it.
 
 ## Permissions
 
@@ -204,9 +247,16 @@ the Service callback firing, and every error — is also logged to
   property of how busy the machine is at that moment.
 - **The Supertonic model must already exist at `~/.cache/supertonic3`**
   (or `$ALOUD_MODEL_DIR`, if set) — there is no first-run download yet.
-- **The hotkey and the Service are silently ignored while a read is
-  already speaking.** A trigger that lands while one is in flight is
-  dropped with no notification, the same as a deliberate cancel.
+- **The region hotkey is silently ignored while another read is in
+  flight — including a paused one.** A second `Cmd+Shift+R` that lands
+  while a read is under way is dropped with no notification, the same as a
+  deliberate cancel, and a *paused* read is still a read in flight (a
+  state `Cmd+Shift+A` makes easy to reach). The region hotkey carries no
+  text, so Aloud cannot tell a deliberate re-trigger from a stray
+  double-press, and interrupting on a stray press would be worse. To get
+  out of it, Stop from the tray, or resume and let it finish.
+  `Cmd+Shift+A` is different: it carries the selection, so a second press
+  is a pause or a new read rather than nothing (see the table above).
 - **Reading a selection made inside the Settings window hides that
   window.** macOS activates Aloud whenever it delivers a selection to
   the Service, so Aloud hands activation straight back — otherwise every
