@@ -7,6 +7,8 @@
 use aloud::app::actions::Outcome;
 use aloud::app::App;
 use aloud::capture::macos::ScreenCapture;
+use aloud::login_item::macos::AppServiceLoginItem;
+use aloud::login_item::{LoginItemService, LoginItemStatus};
 use aloud::ocr::macos::VisionOcr;
 use aloud::play::player::Player;
 use aloud::play::sink::{AudioSink, RodioSink};
@@ -627,6 +629,75 @@ fn open_services_settings() {
     }
 }
 
+/// The live `SMAppService` handle, in managed state so the two
+/// launch-at-login commands can be driven by a fake in tests (they take
+/// only `State`, never `AppHandle` — see `command_tests`).
+struct LoginItemState(Box<dyn LoginItemService>);
+
+/// What the settings page needs to render the launch-at-login toggle.
+///
+/// `on` is derived from the OS's live status, never from the persisted
+/// `launch_at_login` bool — a user who switches Aloud off in System
+/// Settings must see the toggle go off, and Aloud is not notified when
+/// that happens. See `LoginItemStatus::is_on`.
+#[derive(serde::Serialize)]
+struct LoginItemView {
+    on: bool,
+    status: &'static str,
+    note: Option<&'static str>,
+}
+
+impl From<LoginItemStatus> for LoginItemView {
+    fn from(s: LoginItemStatus) -> Self {
+        Self {
+            on: s.is_on(),
+            status: s.tag(),
+            note: s.note(),
+        }
+    }
+}
+
+/// Reads the live login-item status. Called by the settings page every
+/// time it loads, which is what keeps the toggle honest about a change
+/// made outside Aloud.
+#[tauri::command]
+fn get_login_item_status(login_item: State<'_, LoginItemState>) -> LoginItemView {
+    login_item.0.status().into()
+}
+
+/// Applies the requested launch-at-login state to the OS, then persists.
+///
+/// Same ordering as `set_shortcut`: nothing reaches disk until the OS has
+/// accepted, so a rejected request cannot come back after a restart.
+///
+/// Returns the OS's own read-back status, not `enabled` — see
+/// `login_item::apply`. `register()` returning `Ok` is not proof the app
+/// will launch at login, and the toggle must show what is true rather
+/// than what was asked for.
+#[tauri::command]
+fn set_launch_at_login(
+    state: State<'_, SettingsState>,
+    login_item: State<'_, LoginItemState>,
+    enabled: bool,
+) -> Result<LoginItemView, String> {
+    let status = aloud::login_item::apply(login_item.0.as_ref(), enabled).map_err(|e| {
+        aloud::log_line!("login item: could not set launch-at-login={enabled}: {e}");
+        format!("Could not change launch at login: {e}")
+    })?;
+
+    persist(&state, |s| s.launch_at_login = enabled)?;
+    aloud::log_line!("login item: launch-at-login={enabled}, status is now {status:?}");
+    Ok(status.into())
+}
+
+/// Deep link to System Settings → General → Login Items — the only place
+/// a `RequiresApproval` status can be resolved, since it means consent
+/// was withheld or revoked and no amount of re-registering grants it.
+#[tauri::command]
+fn open_login_items_settings() {
+    aloud::login_item::macos::open_system_settings_login_items();
+}
+
 /// Shows the settings window, creating it on first use.
 ///
 /// `show()` MUST precede `set_focus()`: tao's set_focus early-returns on
@@ -661,7 +732,14 @@ fn open_settings_window(app: &tauri::AppHandle) {
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Aloud Settings")
-    .inner_size(480.0, 560.0)
+    // Must match tauri.conf.json's `settings` window, which is what
+    // every ordinary open actually uses (this branch only runs if the
+    // config-created window was destroyed). Measured at 480px wide, the
+    // page is 618px tall in its ordinary state and 710px with the
+    // launch-at-login failure note and its Login Items button showing;
+    // the window is not resizable, so anything shorter than this puts
+    // the last section — or a failure message — below the fold.
+    .inner_size(480.0, 700.0)
     .resizable(false)
     .decorations(true)
     .center()
@@ -717,78 +795,7 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
-/// TEMPORARY — the M4 launch-at-login spike. Remove before shipping the
-/// feature. Registers, reports, and unregisters the login item from
-/// inside the real signed bundle, which is the only context in which
-/// `SMAppService.mainAppService` means anything (it resolves through
-/// `NSBundle.mainBundle`).
-#[cfg(target_os = "macos")]
-fn login_item_spike() {
-    use aloud::login_item::macos::AppServiceLoginItem;
-    use aloud::login_item::LoginItemService;
-
-    let svc = AppServiceLoginItem;
-    println!("exe:    {:?}", std::env::current_exe());
-    println!("before: {:?}", svc.status());
-
-    match svc.register() {
-        Ok(()) => println!("register: Ok"),
-        Err(e) => println!("register: Err domain={} code={} msg={}", e.domain, e.code, e.message),
-    }
-    println!("after register: {:?}", svc.status());
-
-    if std::env::args().any(|a| a == "--leave-registered") {
-        println!("leaving it registered as asked; run again without the flag to undo");
-        return;
-    }
-
-    match svc.unregister() {
-        Ok(()) => println!("unregister: Ok"),
-        Err(e) => println!(
-            "unregister: Err domain={} code={} msg={}",
-            e.domain, e.code, e.message
-        ),
-    }
-    println!("after unregister: {:?}", svc.status());
-}
-
-/// TEMPORARY — the M4 launch-at-login spike, unknown 2. Invokes the
-/// "Read Aloud" Service exactly the way the Services menu does
-/// (`NSPerformService`), so the selection path can be confirmed without
-/// synthetic keystrokes or the Accessibility permission.
-#[cfg(target_os = "macos")]
-fn service_probe() {
-    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSPerformService};
-    use objc2_foundation::NSString;
-
-    let text = NSString::from_str("Service probe from the launch at login spike.");
-    // SAFETY: a fresh unique pasteboard, declared for string content and
-    // written to before use — the shape NSPerformService documents.
-    let ok = unsafe {
-        let pb = NSPasteboard::pasteboardWithUniqueName();
-        pb.declareTypes_owner(&objc2_foundation::NSArray::from_slice(&[NSPasteboardTypeString]), None);
-        pb.setString_forType(&text, NSPasteboardTypeString);
-        NSPerformService(&NSString::from_str("Read Aloud"), Some(&pb))
-    };
-    println!("NSPerformService(\"Read Aloud\") -> {ok}");
-}
-
 fn main() {
-    // TEMPORARY spike hooks — see the two functions above. Both run
-    // before any Tauri setup and exit.
-    #[cfg(target_os = "macos")]
-    {
-        aloud::log::init();
-        if std::env::args().any(|a| a == "--login-item-spike") {
-            login_item_spike();
-            return;
-        }
-        if std::env::args().any(|a| a == "--service-probe") {
-            service_probe();
-            return;
-        }
-    }
-
     // Must run before anything else that might log: when the app is
     // launched as a bundle via LaunchServices (the only way it works
     // correctly — see the Service registration below), stderr is not
@@ -825,6 +832,9 @@ fn main() {
             open_services_settings,
             begin_probe,
             end_probe,
+            get_login_item_status,
+            set_launch_at_login,
+            open_login_items_settings,
         ])
         .setup(|app| {
             // Menubar app: no Dock icon, no window.
@@ -960,6 +970,30 @@ fn main() {
                 settings: Mutex::new(settings.clone()),
                 config_dir,
             });
+
+            // Launch at login. The OS is the source of truth and it is
+            // read, never written, here: the state lives in macOS's
+            // Background Task Management store, and the commonest reason
+            // for it to disagree with what Aloud saved is the user
+            // deliberately switching Aloud off in System Settings →
+            // General → Login Items. Re-registering to "correct" that
+            // would override an opt-out Aloud is never notified of, so
+            // this only says what it found — the settings window's
+            // toggle then renders the live status, and only an explicit
+            // toggle ever registers. See src/login_item/mod.rs.
+            let login_item = AppServiceLoginItem;
+            let live = login_item.status();
+            aloud::log_line!(
+                "login item: status={live:?}, settings say launch_at_login={}",
+                settings.launch_at_login
+            );
+            if live.is_on() != settings.launch_at_login {
+                aloud::log_line!(
+                    "login item: settings and the OS disagree - the OS wins; \
+                     nothing re-registered"
+                );
+            }
+            app.manage(LoginItemState(Box::new(login_item)));
 
             // The settings window is declared in tauri.conf.json (visible:
             // false), so it already exists at this point — every ordinary
@@ -1467,6 +1501,151 @@ mod command_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A `LoginItemService` with a scripted register outcome and a
+    /// scripted status. The two are independent on purpose: "the OS said
+    /// yes" and "the OS will actually do it" are different facts, and
+    /// conflating them is the defect these commands exist to avoid.
+    struct FakeLoginItem {
+        register_result: Result<(), aloud::login_item::LoginItemError>,
+        status: LoginItemStatus,
+    }
+
+    impl LoginItemService for FakeLoginItem {
+        fn status(&self) -> LoginItemStatus {
+            self.status
+        }
+        fn register(&self) -> Result<(), aloud::login_item::LoginItemError> {
+            self.register_result.clone()
+        }
+        fn unregister(&self) -> Result<(), aloud::login_item::LoginItemError> {
+            self.register_result.clone()
+        }
+    }
+
+    /// Builds the mock app around both states and invokes one of the
+    /// launch-at-login commands through the real IPC pipeline.
+    fn invoke_login_item(
+        state: SettingsState,
+        fake: FakeLoginItem,
+        cmd: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, serde_json::Value> {
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                get_login_item_status,
+                set_launch_at_login
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("failed to build mock app");
+        app.manage(state);
+        app.manage(LoginItemState(Box::new(fake)));
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("MockRuntime can build a webview headlessly");
+
+        get_ipc_response(&webview, request(cmd, body)).map(|r| r.deserialize().unwrap())
+    }
+
+    #[test]
+    fn the_toggle_reads_the_live_os_status_not_the_saved_bool() {
+        // The state after a user switches Aloud off in System Settings →
+        // General → Login Items: Aloud is never notified, so its saved
+        // bool still says true while the OS says otherwise. Rendering the
+        // saved bool here is exactly how a settings window comes to lie
+        // about the system it is describing.
+        let dir = throwaway_dir("login-live");
+        let value = invoke_login_item(
+            SettingsState {
+                settings: Mutex::new(Settings {
+                    launch_at_login: true,
+                    ..Settings::default()
+                }),
+                active_shortcut: Mutex::new(Settings::default().region_shortcut),
+                config_dir: dir.clone(),
+            },
+            FakeLoginItem {
+                register_result: Ok(()),
+                status: LoginItemStatus::RequiresApproval,
+            },
+            "get_login_item_status",
+            serde_json::json!({}),
+        )
+        .expect("get_login_item_status should succeed");
+
+        assert_eq!(value["on"], false);
+        assert_eq!(value["status"], "requires_approval");
+        assert!(
+            value["note"].as_str().is_some_and(|n| n.contains("System Settings")),
+            "the one state the user has to fix themselves must say where"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rejected_request_is_not_written_to_disk() {
+        // Same ordering rule as `set_shortcut`: the OS decides first, and
+        // only an accepted change is persisted. Persisting first would
+        // leave settings.json claiming a login item that does not exist,
+        // for every future launch to report as a disagreement.
+        let dir = throwaway_dir("login-rejected");
+        Settings::default().save(&dir).unwrap();
+
+        let result = invoke_login_item(
+            SettingsState {
+                settings: Mutex::new(Settings::default()),
+                active_shortcut: Mutex::new(Settings::default().region_shortcut),
+                config_dir: dir.clone(),
+            },
+            FakeLoginItem {
+                register_result: Err(aloud::login_item::LoginItemError {
+                    domain: "SMAppServiceErrorDomain".into(),
+                    code: 1,
+                    message: "Operation not permitted".into(),
+                }),
+                status: LoginItemStatus::Enabled,
+            },
+            "set_launch_at_login",
+            serde_json::json!({ "enabled": true }),
+        );
+
+        assert!(result.is_err(), "a refused registration must surface as an error");
+        assert!(
+            !Settings::load(&dir).launch_at_login,
+            "nothing may reach disk until the OS has accepted"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_accepted_request_persists_and_reports_the_read_back_status() {
+        let dir = throwaway_dir("login-accepted");
+        Settings::default().save(&dir).unwrap();
+
+        let value = invoke_login_item(
+            SettingsState {
+                settings: Mutex::new(Settings::default()),
+                active_shortcut: Mutex::new(Settings::default().region_shortcut),
+                config_dir: dir.clone(),
+            },
+            FakeLoginItem {
+                register_result: Ok(()),
+                status: LoginItemStatus::Enabled,
+            },
+            "set_launch_at_login",
+            serde_json::json!({ "enabled": true }),
+        )
+        .expect("set_launch_at_login should succeed");
+
+        assert_eq!(value["on"], true);
+        assert_eq!(value["status"], "enabled");
+        assert!(value["note"].is_null());
+        assert!(Settings::load(&dir).launch_at_login);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Regression coverage for the M4 whole-branch bug: `Settings::load` ran
@@ -1490,6 +1669,7 @@ mod startup_config_tests {
             region_shortcut: aloud::settings::DEFAULT_SHORTCUT.to_string(),
             voice: "M5".into(),
             speed: 1.5,
+            launch_at_login: false,
         };
         // Both deliberately differ from the defaults: an implementation
         // that ignored `settings` and returned the hardcoded defaults —
@@ -1544,6 +1724,7 @@ mod settings_state_tests {
             region_shortcut: "Alt+Shift+E".into(),
             voice: "F5".into(),
             speed: 1.0,
+            launch_at_login: false,
         };
         saved.save(&dir).unwrap();
 

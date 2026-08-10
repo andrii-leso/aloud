@@ -140,11 +140,14 @@ pub const SM_ERROR_ALREADY_REGISTERED: isize = 12;
 /// Same reasoning as above, mirrored.
 pub const SM_ERROR_JOB_NOT_FOUND: isize = 6;
 
-/// The two OS operations `apply` needs, seamed out — same pattern as
-/// `ShortcutRegistrar` in `src/bin/aloud.rs` — so the idempotence and
+/// The three OS operations this feature needs, seamed out — same pattern
+/// as `ShortcutRegistrar` in `src/bin/aloud.rs` — so the idempotence and
 /// read-back-the-truth logic has unit tests that need neither a bundle
 /// nor a live `SMAppService`.
-pub trait LoginItemService {
+///
+/// `Send + Sync` because the app holds one of these in Tauri managed
+/// state, reachable from any IPC command.
+pub trait LoginItemService: Send + Sync {
     fn status(&self) -> LoginItemStatus;
     fn register(&self) -> Result<(), LoginItemError>;
     fn unregister(&self) -> Result<(), LoginItemError>;
@@ -163,7 +166,7 @@ pub trait LoginItemService {
 /// The two "already in the requested end state" errors are folded into
 /// success — an idempotent toggle must not report failure for arriving
 /// where it was told to go.
-pub fn apply(svc: &impl LoginItemService, want: bool) -> Result<LoginItemStatus, LoginItemError> {
+pub fn apply(svc: &dyn LoginItemService, want: bool) -> Result<LoginItemStatus, LoginItemError> {
     let result = if want { svc.register() } else { svc.unregister() };
 
     match result {
@@ -179,7 +182,7 @@ pub fn apply(svc: &impl LoginItemService, want: bool) -> Result<LoginItemStatus,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     #[test]
     fn raw_status_values_map_to_apples_documented_cases() {
@@ -223,35 +226,35 @@ mod tests {
     /// script the *read-back* value independently of what register /
     /// unregister returned — which is the exact divergence `apply` exists
     /// to surface.
-    struct FakeService {
-        register_result: Result<(), LoginItemError>,
-        unregister_result: Result<(), LoginItemError>,
-        status_after: LoginItemStatus,
-        calls: RefCell<Vec<&'static str>>,
+    pub struct FakeService {
+        pub register_result: Result<(), LoginItemError>,
+        pub unregister_result: Result<(), LoginItemError>,
+        pub status_after: LoginItemStatus,
+        pub calls: Mutex<Vec<&'static str>>,
     }
 
     impl FakeService {
-        fn ok(status_after: LoginItemStatus) -> Self {
+        pub fn ok(status_after: LoginItemStatus) -> Self {
             Self {
                 register_result: Ok(()),
                 unregister_result: Ok(()),
                 status_after,
-                calls: RefCell::new(Vec::new()),
+                calls: Mutex::new(Vec::new()),
             }
         }
     }
 
     impl LoginItemService for FakeService {
         fn status(&self) -> LoginItemStatus {
-            self.calls.borrow_mut().push("status");
+            self.calls.lock().unwrap().push("status");
             self.status_after
         }
         fn register(&self) -> Result<(), LoginItemError> {
-            self.calls.borrow_mut().push("register");
+            self.calls.lock().unwrap().push("register");
             self.register_result.clone()
         }
         fn unregister(&self) -> Result<(), LoginItemError> {
-            self.calls.borrow_mut().push("unregister");
+            self.calls.lock().unwrap().push("unregister");
             self.unregister_result.clone()
         }
     }
@@ -268,14 +271,14 @@ mod tests {
     fn turning_it_on_registers_then_reports_the_read_back_status() {
         let svc = FakeService::ok(LoginItemStatus::Enabled);
         assert_eq!(apply(&svc, true), Ok(LoginItemStatus::Enabled));
-        assert_eq!(svc.calls.borrow().as_slice(), ["register", "status"]);
+        assert_eq!(svc.calls.lock().unwrap().as_slice(), ["register", "status"]);
     }
 
     #[test]
     fn turning_it_off_unregisters_then_reports_the_read_back_status() {
         let svc = FakeService::ok(LoginItemStatus::NotRegistered);
         assert_eq!(apply(&svc, false), Ok(LoginItemStatus::NotRegistered));
-        assert_eq!(svc.calls.borrow().as_slice(), ["unregister", "status"]);
+        assert_eq!(svc.calls.lock().unwrap().as_slice(), ["unregister", "status"]);
     }
 
     #[test]
@@ -337,6 +340,6 @@ mod tests {
             ..FakeService::ok(LoginItemStatus::Enabled)
         };
         assert_eq!(apply(&svc, true), Err(err(1)));
-        assert_eq!(svc.calls.borrow().as_slice(), ["register"]);
+        assert_eq!(svc.calls.lock().unwrap().as_slice(), ["register"]);
     }
 }

@@ -272,7 +272,16 @@ dates as returned — none invented):
   /Applications/Aloud.app: satisfies its Designated Requirement
   ```
   It is **not** the ad-hoc case. It is a stable, non-ad-hoc DR that survives rebuilds.
-- **UNVERIFIED — this is the open question M4 must not assume away.** Whether BTM will
+- **SETTLED 2026-08-10 — it works.** The spike below was run; `SMAppService.mainApp`
+  accepted `/Applications/Aloud.app` signed by the self-signed "Aloud Dev" identity on
+  macOS 26.6, with `TeamIdentifier=not set` and no Apple anchor:
+  `NotFound → register: Ok → Enabled → unregister: Ok → NotRegistered`. No
+  `BTMErrorDomain -98`, no `kSMErrorInvalidSignature`. The TN3127 reading below (BTM keys
+  on a **stable, non-ad-hoc** designated requirement) is the correct one; the DTS
+  "Apple-issued identity" reply was about an embedded helper + LaunchDaemon, not `mainApp`.
+  Evidence and the two surprises it turned up: [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md).
+  The paragraph below is preserved as written on 2026-08-09.
+- **UNVERIFIED (as of 2026-08-09; see SETTLED above)** — Whether BTM will
   *construct an identifier* for a bundle whose leaf certificate has no Apple anchor and
   `TeamIdentifier=not set` is undocumented, and no forum thread reports either success or
   failure for a **self-signed (not ad-hoc) `mainApp`**. The `failed to construct identifier`

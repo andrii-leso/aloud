@@ -104,15 +104,37 @@ decoder renders into, and above ~1.1× it silently drops words
 always driven at 1.0. The retiming preserves pitch, so a faster male
 voice stays a male voice.
 
+**Launch at login.** Off by default. Switching it on registers the app
+bundle with macOS through `SMAppService` (13.0+), so macOS launches Aloud
+at login the same way Finder would — through LaunchServices, which is what
+registers the Service that `Cmd+Shift+A` depends on. (A LaunchAgent
+pointing at the inner `Contents/MacOS/aloud` executable would launch the
+same binary and silently lose the Service; that is why
+`tauri-plugin-autostart` is not used here.)
+
+This one setting is **not** stored in `settings.json` in any meaningful
+sense. The real state lives in macOS's Background Task Management store,
+survives deleting the app, and can be changed in **System Settings →
+General → Login Items** without Aloud being told. So the checkbox shows
+what the OS currently reports, re-read every time the window opens: turn
+Aloud off in Login Items and the checkbox will be off the next time you
+look. If macOS says approval is needed, the window says so and offers a
+button straight to that pane — Aloud cannot grant its own consent, and
+re-registering behind your back to "fix" it would override a deliberate
+choice, so it never does. See `docs/2026-08-10-launch-at-login.md`.
+
 Settings persist at
 `~/Library/Application Support/com.andriileso.aloud/settings.json` —
 inspect or delete that file to reset to defaults.
 
 The settings window is implemented and covered by unit/characterisation
 tests at the logic layer, but its interactive behaviour — the shortcut
-recorder, the confirmation flow, live voice/speed switching — has not
-been exercised end-to-end by anyone clicking through the actual window.
-Treat it as built, not yet hands-on verified.
+recorder, the confirmation flow, live voice/speed switching, the
+launch-at-login toggle — has not been exercised end-to-end by anyone
+clicking through the actual window. Treat it as built, not yet hands-on
+verified. Launch at login additionally needs one real logout/login to
+confirm the Service still works from a login-item launch; everything
+short of that has been verified.
 
 ## Building
 

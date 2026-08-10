@@ -15,6 +15,11 @@ fn missing_file_yields_defaults() {
     assert_eq!(s.region_shortcut, DEFAULT_SHORTCUT);
     assert_eq!(s.voice, "F5");
     assert_eq!(s.speed, 1.0);
+    assert!(
+        !s.launch_at_login,
+        "launch at login must default off - building the feature must not \
+         switch it on for anyone"
+    );
 }
 
 #[test]
@@ -24,12 +29,34 @@ fn round_trips_through_disk() {
         region_shortcut: "Alt+Shift+E".into(),
         voice: "M5".into(),
         speed: 1.25,
+        launch_at_login: true,
     };
     s.save(&d).unwrap();
     let back = Settings::load(&d);
     assert_eq!(back.region_shortcut, "Alt+Shift+E");
     assert_eq!(back.voice, "M5");
     assert_eq!(back.speed, 1.25);
+    assert!(back.launch_at_login);
+}
+
+#[test]
+fn a_settings_file_written_before_launch_at_login_existed_still_loads() {
+    // Every settings.json on disk today predates the field. The
+    // container-level #[serde(default)] is what makes this work; without
+    // it serde rejects the whole document as missing a field, `load`
+    // falls back to defaults, and the user silently loses their saved
+    // shortcut, voice and speed.
+    let d = tmpdir("preexisting");
+    fs::write(
+        d.join("settings.json"),
+        br#"{"region_shortcut":"Alt+Shift+E","voice":"M5","speed":1.5}"#,
+    )
+    .unwrap();
+    let s = Settings::load(&d);
+    assert_eq!(s.region_shortcut, "Alt+Shift+E");
+    assert_eq!(s.voice, "M5");
+    assert_eq!(s.speed, 1.5);
+    assert!(!s.launch_at_login);
 }
 
 #[test]

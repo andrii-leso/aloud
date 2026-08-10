@@ -12,6 +12,9 @@ const speed = document.getElementById("speed");
 const speedValue = document.getElementById("speed-value");
 const speedStatus = document.getElementById("speed-status");
 const voiceStatus = document.getElementById("voice-status");
+const launchToggle = document.getElementById("launch-at-login");
+const launchStatus = document.getElementById("launch-status");
+const openLoginItems = document.getElementById("open-login-items");
 
 let recording = false;
 
@@ -246,12 +249,57 @@ speed.addEventListener("change", async () => {
   }
 });
 
+// Renders the launch-at-login controls from a LoginItemView, which the
+// Rust side always builds from the OS's LIVE SMAppService status — never
+// from the saved `launch_at_login` bool. macOS does not tell Aloud when
+// the user switches it off in System Settings > General > Login Items, so
+// the only way this checkbox can be trusted is to ask the system every
+// time the window loads and after every change.
+//
+// `note` is present exactly for the states the user has to resolve
+// themselves (approval withheld, item not found). Those are also the only
+// states where the Login Items button is worth showing: registering again
+// from here cannot grant consent, so the button is the actual fix.
+function showLoginItem(view) {
+  launchToggle.checked = view.on;
+  if (view.note) setStatus(launchStatus, view.note, "error");
+  else if (view.on) setStatus(launchStatus, "Aloud will start at login.", "ok");
+  else setStatus(launchStatus, "", null);
+  openLoginItems.hidden = !view.note;
+}
+
+launchToggle.addEventListener("change", async () => {
+  const wanted = launchToggle.checked;
+  setStatus(launchStatus, wanted ? "Registering…" : "Removing…", null);
+  try {
+    showLoginItem(await invoke("set_launch_at_login", { enabled: wanted }));
+  } catch (err) {
+    // The OS refused, so nothing was saved. Report that, then put the
+    // checkbox back to what is actually true — leaving it showing the
+    // request would be the exact "toggle lies about system state" defect
+    // this section is built to avoid.
+    setStatus(launchStatus, String(err), "error");
+    const view = await invoke("get_login_item_status").catch(() => null);
+    if (view) {
+      launchToggle.checked = view.on;
+      openLoginItems.hidden = false;
+    }
+  }
+});
+
+openLoginItems.addEventListener("click", () => {
+  invoke("open_login_items_settings");
+});
+
 (async function init() {
   const s = await invoke("get_settings");
   recordBtn.textContent = s.region_shortcut_pretty;
   showSpeed(s.speed);
   const voice = document.querySelector(`input[name="voice"][value="${s.voice}"]`);
   if (voice) voice.checked = true;
+  // Deliberately a second call, not a field on get_settings: this one
+  // reads live OS state, while get_settings reads what Aloud saved.
+  showLoginItem(await invoke("get_login_item_status"));
 })().catch((err) => {
   // Everything on this page is populated by that one call. Without a
   // catch, a failure leaves index.html's hardcoded ⌘⇧R on the button, an
