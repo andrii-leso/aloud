@@ -20,7 +20,7 @@
 //! and `latency_budget.rs`. Uses a `FakeSink` so it never touches the audio
 //! device or makes noise during `cargo test`.
 
-use aloud::app::App;
+use aloud::app::{App, SelectionOutcome};
 use aloud::play::player::Player;
 use aloud::play::sink::AudioSink;
 use aloud::tts::supertonic_engine::SupertonicEngine;
@@ -62,8 +62,9 @@ fn voice_swap_spawns_the_new_engine_and_speaks_through_it() {
     let player = Player::new(f5, Arc::clone(&sink));
     let app = App::new(player, 1.0);
 
-    assert!(
+    assert_eq!(
         app.speak_selection("Hello.").unwrap(),
+        SelectionOutcome::Spoke { replaced: false },
         "the app should speak on the original F5 engine"
     );
 
@@ -71,10 +72,11 @@ fn voice_swap_spawns_the_new_engine_and_speaks_through_it() {
     let new_player = Player::new(Arc::new(m5), Arc::clone(&sink));
     app.swap_player(new_player);
 
-    assert!(
+    assert_eq!(
         app.speak_selection("Hello again.").unwrap(),
+        SelectionOutcome::Spoke { replaced: false },
         "the app should still speak after swapping to the M5 engine — a \
          swap that silently broke the Player would surface here as an \
-         Err or a false"
+         Err or a Skipped"
     );
 }

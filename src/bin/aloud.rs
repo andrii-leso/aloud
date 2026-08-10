@@ -5,7 +5,7 @@
 //! Stop.
 
 use aloud::app::actions::Outcome;
-use aloud::app::App;
+use aloud::app::{App, SelectionOutcome};
 use aloud::capture::macos::ScreenCapture;
 use aloud::login_item::macos::AppServiceLoginItem;
 use aloud::login_item::{LoginItemService, LoginItemStatus};
@@ -973,10 +973,15 @@ fn main() {
             // than an instruction: ⌘⇧A already works, because Info.plist ships it as
             // the Service's NSKeyEquivalent. The previous label told the user to go
             // and assign it, which was untrue.
+            //
+            // "Read / Pause" rather than "Read": the same chord now pauses and
+            // resumes the selection it started (see `App::speak_selection`), and
+            // a label that still said only "Read" would understate what the one
+            // control the user reaches for most actually does.
             let read_selection_item = MenuItem::with_id(
                 app,
                 "read_selection_info",
-                "Read Selection  (⌘⇧A, or the Services menu)",
+                "Read / Pause Selection  (⌘⇧A, or the Services menu)",
                 false,
                 None::<&str>,
             )?;
@@ -1291,18 +1296,31 @@ fn main() {
                         let rt = Arc::clone(&rt);
                         std::thread::spawn(move || {
                             let outcome = rt.app.speak_selection(&text);
-                            // Same reason as `spawn_read_region`: the read
-                            // is over, so the tray must not still offer
-                            // "Resume".
+                            // Re-rendered from the sink on every path, not
+                            // only when a read ends. A `Toggled` outcome
+                            // returns while the read is still in flight and
+                            // is the ONLY thing that changed the paused
+                            // state, so the tray would otherwise keep
+                            // offering "Pause" for an already-paused read.
                             refresh_pause_label(&rt);
                             match outcome {
-                            Ok(true) => {
-                                aloud::log_line!("speak_selection: completed, spoke");
+                            Ok(SelectionOutcome::Spoke { replaced }) => {
+                                aloud::log_line!(
+                                    "speak_selection: completed, spoke{}",
+                                    if replaced { " (replaced the read in flight)" } else { "" }
+                                );
                                 reset_status(&rt);
                             }
-                            Ok(false) => {
+                            Ok(SelectionOutcome::Toggled { paused }) => {
                                 aloud::log_line!(
-                                    "speak_selection: skipped, a read is already in flight"
+                                    "speak_selection: same selection delivered again, now {}",
+                                    if paused { "paused" } else { "playing" }
+                                );
+                            }
+                            Ok(SelectionOutcome::Skipped) => {
+                                aloud::log_line!(
+                                    "speak_selection: skipped, another selection is already \
+                                     taking over"
                                 );
                             }
                             Err(e) => {

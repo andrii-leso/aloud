@@ -5,15 +5,36 @@
 //!
 //! `Player::speak` is documented single-caller/serialized and deliberately
 //! does not lock internally — see its doc comment in `src/play/player.rs`.
-//! `App` is where that contract gets honoured: a busy flag makes a second
-//! `read_region`/`speak_selection` call, arriving while one is still
-//! speaking (a second hotkey press, or a Service delivery mid-utterance),
-//! a silent no-op rather than a second concurrent `speak()` call that
-//! would interleave `sink.append()` calls and race the shared
-//! `speaking`/`stop_flag` state. A stop-then-start alternative was
-//! considered and rejected: it would interrupt whatever the user is
-//! already listening to on every stray double-press, which is worse
-//! ordinary-use behaviour than just ignoring the repeat.
+//! `App` is where that contract gets honoured: a busy flag makes it
+//! impossible for a second `read_region`/`speak_selection` call to run a
+//! concurrent `speak()` that would interleave `sink.append()` calls and
+//! race the shared `speaking`/`stop_flag` state.
+//!
+//! **What a second call does while the flag is held depends on the path,
+//! and that difference is the whole of the selection toggle.**
+//!
+//! - **Region (⌘⇧R): a silent no-op, unchanged.** A stop-then-start
+//!   alternative was considered and rejected, and that reasoning still
+//!   holds here: the region hotkey delivers no text, so a second press is
+//!   indistinguishable from a stray double-press, and acting on it would
+//!   interrupt whatever the user is already listening to.
+//! - **Selection (⌘⇧A): decided from the delivered text.** The selection
+//!   path is a macOS Service, so *every* invocation hands us the selected
+//!   text — which means a repeat and a genuine "read this instead" are
+//!   distinguishable after all, and the old blanket no-op was answering
+//!   both with silence. `intent::decide_selection` (`src/app/intent.rs`)
+//!   makes that call: same text -> toggle pause on the read in flight;
+//!   different text (or a region read in flight) -> stop it and read the
+//!   new selection. The rejected-stop-then-start rationale above applies
+//!   only to the *repeat* case, which is now a pause rather than a
+//!   restart.
+//!
+//! `current` is what makes that decision possible: it names the read that
+//! holds the busy flag, and it exists for exactly as long as that read
+//! does. It is published *after* the flag is taken and cleared *before* it
+//! is released (see `BusyRelease`), so it can never name a read that has
+//! already finished — a stale value would turn the next press into a pause
+//! of silence.
 //!
 //! The busy flag covers `speak()` calls and nothing else. `stop()` and
 //! `toggle_pause()` are outside it by design: both only set atomics on
@@ -35,13 +56,54 @@
 //! currently holds the read lock.
 
 pub mod actions;
+pub mod intent;
 
+use crate::app::intent::{comparison_key, decide_selection, Current, SelectionAction};
 use crate::capture::RegionSelector;
 use crate::ocr::OcrEngine;
 use crate::play::player::Player;
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::RwLock;
+use std::sync::{Mutex, MutexGuard, RwLock};
+use std::time::{Duration, Instant};
+
+/// How long a selection takeover waits for the read it is displacing to
+/// let go of the busy flag.
+///
+/// Not a latency budget. The expected wait is a few milliseconds —
+/// `Player::stop` acts on the sink rather than on the loop, and every
+/// iteration of `Player::run`/`wait_for_drain` checks the stop flag — and
+/// at worst one `engine.synthesize()` call, which is seconds on a loaded
+/// machine (CLAUDE.md constraint 5). This bound exists only so that a read
+/// which never releases at all cannot hang the Service callback thread
+/// forever; it sits just past the player's own 30s stall watchdog, which
+/// is what bounds the pathological case.
+const TAKEOVER_WAIT: Duration = Duration::from_secs(35);
+
+/// Poll interval while waiting for that release.
+const ACQUIRE_POLL: Duration = Duration::from_millis(5);
+
+/// What a selection delivery actually did.
+///
+/// Three outcomes rather than the old `bool`, because ⌘⇧A now has three
+/// honest answers and the caller logs (and, for a toggle, re-renders the
+/// tray from) which one happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionOutcome {
+    /// The delivered text was read. `replaced` is true when a different
+    /// read was stopped to make room for it.
+    Spoke { replaced: bool },
+    /// The same selection was already in flight, so this press toggled
+    /// pause instead of starting anything. Carries the resulting paused
+    /// state as `Player::pause`/`resume` report it — for logging only.
+    /// The tray label is never rendered from this: it re-reads
+    /// `App::is_paused()`, so there is exactly one source of truth for
+    /// what the audio device is doing.
+    Toggled { paused: bool },
+    /// Nothing happened: another selection was already in the middle of
+    /// taking over, or the read being displaced never let go.
+    Skipped,
+}
 
 /// Holds the shared `Player` and the busy guard around it.
 pub struct App {
@@ -51,6 +113,12 @@ pub struct App {
     // serializes speak() calls; this only guards the swap itself.
     player: RwLock<Player>,
     busy: AtomicBool,
+    /// Names the read that currently holds `busy`, or `None`. Written only
+    /// by `acquire_within` and `BusyRelease` — see the module doc comment.
+    current: Mutex<Option<Current>>,
+    /// Set while one selection delivery is between "stop what is playing"
+    /// and "own the busy flag". See `speak_selection`.
+    taking_over: AtomicBool,
     // f32 bits. Speed is a per-call argument to Player::speak, so it can
     // change between utterances with no reconstruction.
     speed: AtomicU32,
@@ -61,6 +129,8 @@ impl App {
         Self {
             player: RwLock::new(player),
             busy: AtomicBool::new(false),
+            current: Mutex::new(None),
+            taking_over: AtomicBool::new(false),
             speed: AtomicU32::new(crate::settings::Settings::clamp_speed(speed).to_bits()),
         }
     }
@@ -146,66 +216,175 @@ impl App {
     /// which of the three things happened (cancelled / found nothing /
     /// spoke) — the caller (`src/bin/aloud.rs`) uses that to decide
     /// whether a notification is warranted.
+    ///
+    /// Unchanged by the selection toggle, deliberately: `Duration::ZERO` is a
+    /// plain try-acquire, so a repeat ⌘⇧R while a read is in flight is
+    /// still dropped on the floor rather than interrupting it. The region
+    /// hotkey carries no text, so there is nothing here to tell a
+    /// deliberate re-trigger apart from a stray double-press.
     pub fn read_region(
         &self,
         selector: &dyn RegionSelector,
         ocr: &dyn OcrEngine,
     ) -> Result<Option<actions::Outcome>> {
-        self.guarded(|| {
-            let player = self.player.read().unwrap();
-            actions::read_region(selector, ocr, &player, self.speed())
-        })
+        let Some(_guard) = self.acquire_within(Current::Region, Duration::ZERO) else {
+            return Ok(None);
+        };
+        let player = self.player.read().unwrap();
+        actions::read_region(selector, ocr, &player, self.speed()).map(Some)
     }
 
-    /// Runs the selection flow (see `actions::speak_selection`), guarded
-    /// the same way and against the same busy flag — a region capture and
-    /// a Service-delivered selection share the one `Player`, so pressing
-    /// the hotkey while a selection is still being read must also be a
-    /// no-op, not a second concurrent `speak()`.
+    /// Handles one delivery of selected text from the macOS Service.
     ///
-    /// Returns `Ok(false)` when skipped because the player was already
-    /// busy, `Ok(true)` when it ran to completion.
-    pub fn speak_selection(&self, text: &str) -> Result<bool> {
-        self.guarded(|| {
-            let player = self.player.read().unwrap();
-            actions::speak_selection(text, &player, self.speed())
-        })
-        .map(|ran| ran.is_some())
+    /// The delivered text is the intent signal — see `intent::decide_selection`
+    /// for the three-way decision and `intent::comparison_key` for how two
+    /// selections are compared. This function is only the execution of that
+    /// decision:
+    ///
+    /// - **TogglePause** returns immediately; the read it refers to keeps
+    ///   holding the busy flag, which is exactly right — it has not
+    ///   finished, it has only stopped making noise.
+    /// - **Interrupt** stops the read in flight and then *waits* for it to
+    ///   release the flag. Waiting is not optional: `stop()` is
+    ///   asynchronous (the thread it stops may be inside
+    ///   `engine.synthesize()`), so taking the flag on a plain try-acquire
+    ///   would lose the race and drop the new selection on the floor
+    ///   having already silenced the old one.
+    /// - **Speak** is the same path with nothing to stop first.
+    ///
+    /// The paused state needs no special handling on the Interrupt path,
+    /// and that is load-bearing rather than lucky: `Player::stop` clears
+    /// it via the `AudioSink::stop` contract, and `Player::speak` clears
+    /// it again on entry. A superseded *paused* read would otherwise park
+    /// a paused sink in front of the new one, which swallows it silently
+    /// (Phase 1's discovered rodio trap).
+    pub fn speak_selection(&self, text: &str) -> Result<SelectionOutcome> {
+        // The lock is released before anything is acted on. Holding it
+        // across `toggle_pause` would close a microsecond-wide race (the
+        // read ending between the decision and the toggle) at the cost of
+        // a real deadlock: `BusyRelease::drop` takes this same lock, and a
+        // pending `swap_player` write lock can block the read lock that
+        // `toggle_pause` needs. The race it would buy is benign — the
+        // toggle lands on a `Player` that is no longer speaking, and
+        // `Player::pause` refuses that outright.
+        let action = decide_selection(text, lock_current(&self.current).as_ref());
+
+        if let SelectionAction::TogglePause = action {
+            return Ok(SelectionOutcome::Toggled {
+                paused: self.toggle_pause(),
+            });
+        }
+
+        // Single-slot takeover. Two presses arriving while the first is
+        // still waiting for the previous read to let go carry the same
+        // intent — the new read has not started, so there is nothing yet
+        // to toggle against — and letting the second queue behind the
+        // first would read the same selection twice, back to back. Held
+        // only until the new read owns the busy flag and has published its
+        // text; from that moment a further press sees it and toggles, so
+        // this can never block the feature it protects.
+        if self
+            .taking_over
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            crate::log_line!("selection flow: skipped, a takeover is already under way");
+            return Ok(SelectionOutcome::Skipped);
+        }
+        let takeover = FlagRelease(&self.taking_over);
+
+        let replaced = matches!(action, SelectionAction::Interrupt);
+        if replaced {
+            self.stop();
+        }
+
+        let Some(_guard) = self.acquire_within(
+            Current::Selection(comparison_key(text).to_string()),
+            TAKEOVER_WAIT,
+        ) else {
+            crate::log_line!(
+                "selection flow: skipped, the read in flight did not release within {TAKEOVER_WAIT:?}"
+            );
+            return Ok(SelectionOutcome::Skipped);
+        };
+        // The new read owns the flag and `current` names it, so a further
+        // press can now see it and toggle. Released before the (long)
+        // speak call, not after it.
+        drop(takeover);
+
+        let player = self.player.read().unwrap();
+        actions::speak_selection(text, &player, self.speed())?;
+        Ok(SelectionOutcome::Spoke { replaced })
     }
 
-    /// Runs `f` unless a call is already in flight, in which case it is
-    /// skipped (`Ok(None)`) rather than run concurrently. `T` is generic
-    /// so both callers above can keep their own return shape (`read_region`
-    /// needs to carry `actions::Outcome`; `speak_selection` only ever
-    /// needed a bool, preserved via the `.map` above) without duplicating
-    /// this guard.
-    fn guarded<T, F: FnOnce() -> Result<T>>(&self, f: F) -> Result<Option<T>> {
-        if self
+    /// Takes the busy flag and publishes `current`, waiting up to
+    /// `timeout` for an in-flight read to release it. `Duration::ZERO` is
+    /// a plain try-acquire.
+    ///
+    /// The returned guard releases both on drop — RAII rather than a
+    /// plain store after the call returns, because the caller runs
+    /// `Player::speak` over arbitrary OCR/selection text, and an unwinding
+    /// panic in there must not skip the release. A plain post-call store
+    /// would: the unwind jumps straight past it, the process survives (the
+    /// panic is inside a spawned thread on every caller), and every later
+    /// hotkey press or Service delivery reads `busy == true` forever and
+    /// silently no-ops.
+    fn acquire_within(&self, current: Current, timeout: Duration) -> Option<BusyRelease<'_>> {
+        let deadline = Instant::now() + timeout;
+        while self
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Ok(None);
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(ACQUIRE_POLL);
         }
-        // RAII release rather than a plain `store(false, ...)` after `f()`
-        // returns: `f()` calls into `Player::speak`, which calls into
-        // `TtsEngine::synthesize` over arbitrary OCR/selection text — an
-        // unwinding panic in there must not skip the release. A plain
-        // post-call store would: the unwind jumps straight past it, the
-        // process survives (the panic is inside a spawned thread on every
-        // caller), and every later hotkey press or Service delivery reads
-        // `busy == true` forever and silently no-ops. `_release`'s `Drop`
-        // runs on the ordinary-return path and on an unwind alike.
-        let _release = BusyRelease(&self.busy);
-        f().map(Some)
+        *lock_current(&self.current) = Some(current);
+        Some(BusyRelease {
+            busy: &self.busy,
+            current: &self.current,
+        })
     }
 }
 
-/// Stores `false` into the wrapped flag when dropped, on any exit —
+/// `Mutex::lock` without the poison panic.
+///
+/// The only things this mutex ever guards are a field assignment and a
+/// string comparison, neither of which can panic, so a poisoned flag could
+/// only ever be collateral from a panic elsewhere. `BusyRelease::drop`
+/// runs *during* an unwind, and a second panic there aborts the process
+/// outright — turning the exact class of bug the RAII guard exists to
+/// survive into a hard crash.
+fn lock_current(m: &Mutex<Option<Current>>) -> MutexGuard<'_, Option<Current>> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Releases the busy flag and clears `current` when dropped, on any exit —
 /// normal return, `?`, or a panic unwind.
-struct BusyRelease<'a>(&'a AtomicBool);
+struct BusyRelease<'a> {
+    busy: &'a AtomicBool,
+    current: &'a Mutex<Option<Current>>,
+}
 
 impl Drop for BusyRelease<'_> {
+    fn drop(&mut self) {
+        // `current` first, `busy` second, and the order is load-bearing:
+        // releasing the flag first would let another thread take it and
+        // publish its own `current` before this line ran, and this drop
+        // would then erase it. The next press would read "nothing
+        // playing" and start a second read on top of a live one.
+        *lock_current(self.current) = None;
+        self.busy.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Clears the wrapped flag on drop, on any exit. Same RAII reasoning as
+/// `BusyRelease`, for the single-slot takeover flag.
+struct FlagRelease<'a>(&'a AtomicBool);
+
+impl Drop for FlagRelease<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }

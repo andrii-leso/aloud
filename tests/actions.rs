@@ -3,7 +3,7 @@
 //! `Player`.
 
 use aloud::app::actions::{read_region, speak_selection, Outcome};
-use aloud::app::App;
+use aloud::app::{App, SelectionOutcome};
 use aloud::capture::RegionSelector;
 use aloud::ocr::OcrEngine;
 use aloud::play::player::Player;
@@ -327,13 +327,15 @@ fn successful_selection_speaks_once_with_the_detected_language() {
 #[test]
 fn busy_guard_prevents_a_second_concurrent_speak() {
     // The first call ties up the (single, shared) Player for 200ms. A
-    // second call made while that is in flight must be a same-thread
-    // no-op — never a second concurrent `Player::speak`, which the doc
-    // comment on `Player::speak` says would interleave `sink.append()`
-    // calls and race shared state. If the guard were removed (or replaced
-    // with something that doesn't actually block), the second call would
-    // go through and `calls` would read 2 — this test would then fail on
-    // both assertions below.
+    // second call made while that is in flight must never become a second
+    // concurrent `Player::speak`, which the doc comment on `Player::speak`
+    // says would interleave `sink.append()` calls and race shared state.
+    //
+    // The *same* text is no longer answered with silence —
+    // it toggles pause on the read in flight (see
+    // `tests/selection_toggle.rs`) — but that is still not a second
+    // `speak()`: the engine must have been invoked exactly once. If the
+    // guard were removed, `calls` would read 2 here.
     let engine = Arc::new(SlowEngine {
         calls: AtomicUsize::new(0),
         delay: Duration::from_millis(200),
@@ -355,12 +357,17 @@ fn busy_guard_prevents_a_second_concurrent_speak() {
 
     let first_result = handle.join().expect("first call should not panic");
 
-    assert!(
-        !second_result.unwrap(),
-        "a speak already in flight must make the second call a no-op"
+    // `FakeSink` is never paused, so the toggle resolves to a pause
+    // request against a Player that is speaking.
+    assert_eq!(
+        second_result.unwrap(),
+        SelectionOutcome::Toggled { paused: true },
+        "the same selection while a read is in flight must toggle it, \
+         never start a second concurrent speak"
     );
-    assert!(
+    assert_eq!(
         first_result.unwrap(),
+        SelectionOutcome::Spoke { replaced: false },
         "the first call should have run to completion"
     );
     assert_eq!(
@@ -380,10 +387,16 @@ fn busy_guard_releases_after_completion_so_the_next_call_runs() {
     let first = app.speak_selection(ENGLISH_TEXT).unwrap();
     let second = app.speak_selection(ENGLISH_TEXT).unwrap();
 
-    assert!(first, "first call should run");
-    assert!(
+    assert_eq!(
+        first,
+        SelectionOutcome::Spoke { replaced: false },
+        "first call should run"
+    );
+    assert_eq!(
         second,
-        "once the first call has returned, the guard must be released"
+        SelectionOutcome::Spoke { replaced: false },
+        "once the first call has returned, the guard must be released — and \
+         the text it was reading must not linger and turn this into a toggle"
     );
     assert_eq!(engine.calls.load(Ordering::SeqCst), 2);
 }
@@ -410,7 +423,7 @@ fn busy_guard_releases_after_an_ordinary_failure_so_the_next_call_runs() {
     assert!(
         second.is_err(),
         "the second call must have actually run (and failed the same way) \
-         rather than being skipped as busy, which would read Ok(false)"
+         rather than being skipped as busy, which would read Ok(Skipped)"
     );
     assert_eq!(
         engine.calls.load(Ordering::SeqCst),
@@ -451,8 +464,9 @@ fn busy_guard_releases_after_a_panic_so_the_next_call_proceeds() {
     );
 
     let second = app.speak_selection(ENGLISH_TEXT);
-    assert!(
+    assert_eq!(
         second.unwrap(),
+        SelectionOutcome::Spoke { replaced: false },
         "the busy flag must be released even though the first call panicked; \
          a stuck flag here means the app has silently bricked itself"
     );
@@ -523,8 +537,9 @@ fn swap_player_blocks_until_the_in_flight_utterance_releases_the_read_lock() {
     let swap_waited = swap_started.elapsed();
 
     let ran = handle.join().expect("speak_selection should not panic");
-    assert!(
+    assert_eq!(
         ran.unwrap(),
+        SelectionOutcome::Spoke { replaced: false },
         "the in-flight utterance should have run to completion, not been \
          cut off by the voice swap"
     );
@@ -538,7 +553,10 @@ fn swap_player_blocks_until_the_in_flight_utterance_releases_the_read_lock() {
 
     // The swap actually took effect: a follow-up call reaches the new
     // engine, not the old (still-slow) one.
-    assert!(app.speak_selection(ENGLISH_TEXT).unwrap());
+    assert_eq!(
+        app.speak_selection(ENGLISH_TEXT).unwrap(),
+        SelectionOutcome::Spoke { replaced: false }
+    );
     assert_eq!(
         new_engine.calls.load(Ordering::SeqCst),
         1,
