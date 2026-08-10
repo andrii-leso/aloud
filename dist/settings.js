@@ -260,12 +260,21 @@ speed.addEventListener("change", async () => {
 // themselves (approval withheld, item not found). Those are also the only
 // states where the Login Items button is worth showing: registering again
 // from here cannot grant consent, so the button is the actual fix.
+// `unsupported` is not an OS status: it means this build has no
+// launch-at-login mechanism on this platform (Windows today — see
+// src/login_item/windows.rs). It carries a note like the states the user
+// must resolve, but unlike those there is nothing the user can do and no
+// pane to send them to, so the checkbox is disabled and the button stays
+// hidden. Leaving the toggle live would offer to turn on something that
+// can only fail.
 function showLoginItem(view) {
+  const unsupported = view.status === "unsupported";
   launchToggle.checked = view.on;
+  launchToggle.disabled = unsupported;
   if (view.note) setStatus(launchStatus, view.note, "error");
   else if (view.on) setStatus(launchStatus, "Aloud will start at login.", "ok");
   else setStatus(launchStatus, "", null);
-  openLoginItems.hidden = !view.note;
+  openLoginItems.hidden = unsupported || !view.note;
 }
 
 // True while a set_launch_at_login round trip is in flight. Registering

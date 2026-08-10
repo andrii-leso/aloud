@@ -1,3 +1,9 @@
+// Whole-file gate. `aloud::ocr::macos` does not exist under any other
+// cfg (see `src/ocr/mod.rs`), so without this the *test target* fails to
+// compile on Windows and `cargo test` never reaches a single test —
+// including the platform-neutral ones in the other files.
+#![cfg(target_os = "macos")]
+
 use aloud::ocr::{macos::VisionOcr, OcrEngine};
 use std::path::Path;
 

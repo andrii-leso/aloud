@@ -32,6 +32,8 @@
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 /// What the OS currently says about Aloud's login item.
 ///
@@ -53,6 +55,12 @@ pub enum LoginItemStatus {
     NotFound,
     /// A status value this build does not know about.
     Unknown(isize),
+    /// **Not an `SMAppService` value.** This build has no launch-at-login
+    /// mechanism on this platform, so no OS was asked and there is
+    /// nothing to report. Distinct from `NotRegistered` ("the OS says it
+    /// is off"), because the settings toggle must not offer to turn on
+    /// something that cannot be turned on — see `windows.rs`.
+    Unsupported,
 }
 
 impl LoginItemStatus {
@@ -86,6 +94,7 @@ impl LoginItemStatus {
             Self::RequiresApproval => "requires_approval",
             Self::NotFound => "not_found",
             Self::Unknown(_) => "unknown",
+            Self::Unsupported => "unsupported",
         }
     }
 
@@ -106,6 +115,9 @@ impl LoginItemStatus {
                  System Settings → General → Login Items.",
             ),
             Self::Unknown(_) => Some("macOS reported a login-item state Aloud does not recognise."),
+            Self::Unsupported => {
+                Some("Launch at login is not available in this build on this platform.")
+            }
         }
     }
 }

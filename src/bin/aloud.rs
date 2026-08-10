@@ -6,10 +6,7 @@
 
 use aloud::app::actions::Outcome;
 use aloud::app::{App, SelectionOutcome};
-use aloud::capture::macos::ScreenCapture;
-use aloud::login_item::macos::AppServiceLoginItem;
 use aloud::login_item::{LoginItemService, LoginItemStatus};
-use aloud::ocr::macos::VisionOcr;
 use aloud::play::player::Player;
 use aloud::play::sink::{AudioSink, RodioSink};
 use aloud::settings::{Settings, VOICES};
@@ -22,6 +19,37 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
+
+// The three platform seams, bound once here so nothing below this point
+// mentions a platform. Same rule as `capture/mod.rs`: a `#[cfg]` past the
+// seam means the seam is in the wrong place (Aloud hard constraint 8).
+// The concrete types are interchangeable by construction — `Selector`
+// and `Ocr` are the `RegionSelector`/`OcrEngine` impls with matching
+// `new()` signatures, and `LoginItem` implements `LoginItemService`.
+#[cfg(target_os = "macos")]
+use aloud::capture::macos::ScreenCapture as Selector;
+#[cfg(target_os = "windows")]
+use aloud::capture::windows::ScreenCapture as Selector;
+
+#[cfg(target_os = "macos")]
+use aloud::ocr::macos::VisionOcr as Ocr;
+#[cfg(target_os = "windows")]
+use aloud::ocr::windows::WindowsOcr as Ocr;
+
+#[cfg(target_os = "macos")]
+use aloud::login_item::macos::AppServiceLoginItem as LoginItem;
+#[cfg(target_os = "windows")]
+use aloud::login_item::windows::UnsupportedLoginItem as LoginItem;
+
+/// Opens the OS pane where the user manages Aloud's login item.
+///
+/// Split rather than called directly so `open_login_items_settings`
+/// below stays platform-free. The Windows arm only logs — see
+/// `src/login_item/windows.rs`.
+#[cfg(target_os = "macos")]
+use aloud::login_item::macos::open_system_settings_login_items;
+#[cfg(target_os = "windows")]
+use aloud::login_item::windows::open_system_settings_login_items;
 
 /// The engine and `App` constructor arguments that a loaded `Settings`
 /// implies.
@@ -82,8 +110,8 @@ const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray-windows-16.png");
 /// and shared for the life of the process.
 struct Runtime {
     app: App,
-    selector: ScreenCapture,
-    ocr: VisionOcr,
+    selector: Selector,
+    ocr: Ocr,
     tray: TrayIcon<tauri::Wry>,
     status_item: MenuItem<tauri::Wry>,
     /// Handle to the tray's "Read Region" item, so `refresh_tray_labels`
@@ -769,9 +797,12 @@ fn set_launch_at_login(
 /// Deep link to System Settings → General → Login Items — the only place
 /// a `RequiresApproval` status can be resolved, since it means consent
 /// was withheld or revoked and no amount of re-registering grants it.
+///
+/// Windows has no such pane to open (there is no login item), so the
+/// settings page hides the button there and the platform arm only logs.
 #[tauri::command]
 fn open_login_items_settings() {
-    aloud::login_item::macos::open_system_settings_login_items();
+    open_system_settings_login_items();
 }
 
 /// Shows the settings window, creating it on first use.
@@ -1061,8 +1092,8 @@ fn main() {
 
             let runtime = Arc::new(Runtime {
                 app: core,
-                selector: ScreenCapture::new(),
-                ocr: VisionOcr::new()?,
+                selector: Selector::new(),
+                ocr: Ocr::new()?,
                 tray,
                 status_item,
                 read_region_item,
@@ -1088,8 +1119,10 @@ fn main() {
             // would override an opt-out Aloud is never notified of, so
             // this only says what it found — the settings window's
             // toggle then renders the live status, and only an explicit
-            // toggle ever registers. See src/login_item/mod.rs.
-            let login_item = AppServiceLoginItem;
+            // toggle ever registers. See src/login_item/mod.rs. On
+            // Windows there is no mechanism yet, so `LoginItem` reports
+            // `Unsupported` and this block just records that.
+            let login_item = LoginItem;
             let live = login_item.status();
             aloud::log_line!(
                 "login item: status={live:?}, settings say launch_at_login={}",
