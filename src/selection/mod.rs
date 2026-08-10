@@ -1,10 +1,12 @@
 // The macOS implementation is Objective-C interop (a class defined at
 // runtime, registered with AppKit as a services provider), so the whole
 // module is gated here rather than gating pieces inside it — same shape as
-// `capture/mod.rs`, per Aloud's hard constraint 7. M6 adds a sibling
-// `#[cfg(target_os = "windows")] pub mod windows;`.
+// `capture/mod.rs`, per Aloud's hard constraint 7. `windows` is the M6
+// sibling on the other side of that seam.
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use anyhow::Result;
 

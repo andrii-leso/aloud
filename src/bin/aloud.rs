@@ -58,7 +58,25 @@ impl<'a> StartupConfig<'a> {
 /// colour) — paired with `.icon_as_template(true)` below so macOS
 /// recolours it correctly for both light and dark menu bars. See
 /// `icons/tray.png` and the Swift script that drew it.
+#[cfg(target_os = "macos")]
 const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray.png");
+
+/// The Windows tray glyph, which must be a **different asset**, for two
+/// independent reasons.
+///
+/// Size: Tauri's only public tray API is `Icon::from_rgba`, which calls Win32
+/// `CreateIcon` at the source image's exact pixel dimensions. It never reads
+/// `icons/icon.ico` and never calls `LoadIconMetric`, so the shell scales
+/// whatever it is handed — and Windows' tray base size is 16 px, against
+/// macOS's 44 px asset. Colour: `tray.png` is a macOS *template* image (pure
+/// black on transparent) which only macOS recolours; on Windows it would be
+/// black-on-black against the default dark taskbar.
+///
+/// 16 px is the 100%-scale rung. `icons/make_windows_icons.py` also emits the
+/// 20/24/32 px rungs (125% / 150% / 200%) for a later runtime DPI swap; wiring
+/// that swap is Windows-side work.
+#[cfg(target_os = "windows")]
+const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray-windows-16.png");
 
 /// Everything a hotkey handler or tray click needs, built once at startup
 /// and shared for the life of the process.

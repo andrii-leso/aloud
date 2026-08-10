@@ -1,5 +1,13 @@
 pub mod confusions;
+// Gated to match the `capture` and `selection` seams (Aloud's hard constraint
+// 7). `macos` shells out to the bundled Swift `aloud-ocr` helper, which does
+// not exist on Windows, so compiling it there would produce a type that can
+// only fail at runtime. It was previously ungated only because macOS was the
+// sole target.
+#[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "windows")]
+pub mod windows;
 use anyhow::Result;
 use std::path::Path;
 
