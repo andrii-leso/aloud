@@ -698,6 +698,25 @@ fn open_settings_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Whether a `RunEvent::ExitRequested` should be prevented, i.e. the app
+/// should keep running instead of quitting.
+///
+/// `code` is Tauri's own discriminator (see `RunEvent::ExitRequested`'s
+/// doc comment): `None` means the request came from user interaction —
+/// concretely, tao's `CloseRequested` -> `Destroyed` path firing because
+/// the destroyed window was the last one Tauri was tracking. For a
+/// menubar app with no Dock icon, the settings window IS that last
+/// window, so closing it (the red X) used to quit the whole app instead
+/// of just hiding its window — see
+/// docs/2026-08-10-window-close-quits-app.md. `Some(_)` means a
+/// deliberate `AppHandle::exit()` call: the tray's "Quit Aloud" item, or
+/// `AppHandle::restart()`. Only the window-close case is prevented here;
+/// a real quit must still exit cleanly, so this stays a plain predicate
+/// rather than an unconditional `prevent_exit()`.
+fn should_prevent_exit(code: Option<i32>) -> bool {
+    code.is_none()
+}
+
 fn main() {
     // Must run before anything else that might log: when the app is
     // launched as a bundle via LaunchServices (the only way it works
@@ -1025,8 +1044,97 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Aloud");
+        .build(tauri::generate_context!())
+        .expect("error while running Aloud")
+        .run(|_app_handle, event| {
+            // Tauri's default `RunEvent` handling (what `Builder::run`
+            // provided when nobody supplied a callback, which is what this
+            // app used to do implicitly) exits the whole process the
+            // instant the last open window is destroyed — see
+            // `should_prevent_exit` for why that is wrong here.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if should_prevent_exit(code) {
+                    api.prevent_exit();
+                }
+            }
+        });
+}
+
+/// Covers `should_prevent_exit` in isolation (the code/no-code
+/// discrimination) and, via `MockRuntime`, the real `Builder` -> `build`
+/// -> `run` wiring for the window-close half of the bug: closing the
+/// settings window must not end the run loop.
+///
+/// What this file CANNOT cover: `MockRuntime::request_exit` — what
+/// `AppHandle::exit()` calls, i.e. exactly what the tray's "Quit Aloud"
+/// item triggers — is `unimplemented!()` in tauri 2.11.5's test runtime
+/// (panics if called). So the "a deliberate quit must still exit
+/// cleanly" half of the fix has no automated regression test at this
+/// layer; it was verified by hand against the real release binary
+/// (`app_handle.exit(0)` called programmatically, not clicked) — see
+/// docs/2026-08-10-window-close-quits-app.md for the transcript, and
+/// re-verify by hand if this run-loop code changes again.
+#[cfg(test)]
+mod run_event_tests {
+    use super::should_prevent_exit;
+
+    #[test]
+    fn window_close_is_prevented_but_a_coded_exit_is_not() {
+        assert!(
+            should_prevent_exit(None),
+            "a window-close exit request (code: None) must be prevented, \
+             or closing the settings window quits the whole app"
+        );
+        assert!(
+            !should_prevent_exit(Some(0)),
+            "a deliberate AppHandle::exit() (code: Some(_)) must NOT be \
+             prevented, or the tray's Quit Aloud item stops working"
+        );
+    }
+
+    #[test]
+    fn closing_the_only_window_does_not_end_the_run_loop() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let w = tauri::WebviewWindowBuilder::new(&app, "settings", Default::default())
+            .build()
+            .unwrap();
+
+        // `app.run()` blocks until the loop actually exits, so it has to
+        // run on its own thread; `done_rx` is how the test observes
+        // whether (and when) that happened.
+        let (done_tx, done_rx) = channel();
+        std::thread::spawn(move || {
+            app.run(|_app_handle, event| {
+                if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                    if should_prevent_exit(code) {
+                        api.prevent_exit();
+                    }
+                }
+            });
+            let _ = done_tx.send(());
+        });
+
+        w.close().unwrap();
+
+        // MockRuntime's loop polls its message queue once per second
+        // (see tauri's mock_runtime.rs), so give it several iterations to
+        // actually process the close before concluding it survived.
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(3)).is_err(),
+            "run() returned after the settings window closed — the real \
+             app would have quit here"
+        );
+        // The spawned `app.run()` is now blocked forever (by design: this
+        // test proves it never receives another exit request), so there
+        // is nothing to join — the thread is reaped when the test binary
+        // exits.
+    }
 }
 
 /// Characterisation tests for `pretty_accelerator`. Its inverse,
