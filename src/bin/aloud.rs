@@ -9,6 +9,8 @@ use aloud::app::App;
 use aloud::capture::macos::ScreenCapture;
 use aloud::login_item::macos::AppServiceLoginItem;
 use aloud::login_item::{LoginItemService, LoginItemStatus};
+use aloud::now_playing::macos::{install_remote_commands, MediaRemote};
+use aloud::now_playing::{should_toggle, NowPlaying, RemoteCommand};
 use aloud::ocr::macos::VisionOcr;
 use aloud::play::player::Player;
 use aloud::play::sink::{AudioSink, RodioSink};
@@ -83,6 +85,11 @@ struct Runtime {
     /// `Player` around the same audio output rather than opening a second
     /// device — only the engine changes.
     sink: Arc<dyn AudioSink>,
+    /// Retained for the same reason as `sink`: a voice swap replaces the
+    /// whole `Player`, and the replacement must be handed the same Now
+    /// Playing publisher or the media key stops working after the first
+    /// voice change. See `Player::with_now_playing`.
+    now_playing: Arc<dyn NowPlaying>,
     /// The accelerator actually registered with the OS's global-shortcut
     /// plugin right now, or `None` if nothing is. This is ground truth for
     /// `apply_shortcut`'s rollback/no-op decisions, and it is deliberately
@@ -573,6 +580,23 @@ fn toggle_pause(rt: &Runtime) {
     refresh_pause_label(rt);
 }
 
+/// Routes a system remote command (the physical play/pause key, Control
+/// Centre, a headset) into the *same* `toggle_pause` the tray item and
+/// the `Cmd+Shift+P` chord already use.
+///
+/// Phase 2 adds a trigger, not a mechanism: there is one pause
+/// implementation, one place the state lives (the sink), and one place
+/// the tray label is rendered from. `should_toggle` carries the only
+/// decision — see its doc comment for why `Play`/`Pause` are directional
+/// and the key can never *start* a read.
+fn handle_remote_command(rt: &Runtime, cmd: RemoteCommand) {
+    let paused = rt.app.is_paused();
+    aloud::log_line!("remote command: {cmd:?} (paused={paused})");
+    if should_toggle(cmd, paused) {
+        toggle_pause(rt);
+    }
+}
+
 /// Validates and saves the requested voice, then starts the engine
 /// rebuild on a background thread.
 ///
@@ -633,7 +657,8 @@ fn spawn_voice_swap(app: &tauri::AppHandle, voice: String) {
         let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
         match SupertonicEngine::spawn(&voice) {
             Ok(engine) => {
-                let player = Player::new(Arc::new(engine), Arc::clone(&rt.sink));
+                let player = Player::new(Arc::new(engine), Arc::clone(&rt.sink))
+                    .with_now_playing(Arc::clone(&rt.now_playing));
                 // Blocks until any speak() currently holding the read
                 // lock finishes — see the RwLock doc comment on
                 // `App::swap_player` (src/app/mod.rs).
@@ -950,7 +975,12 @@ fn main() {
             // live voice swap (`spawn_voice_swap`) reuses it rather than
             // opening a second audio device.
             let sink: Arc<dyn AudioSink> = Arc::new(RodioSink::new()?);
-            let player = Player::new(engine, Arc::clone(&sink));
+            // Typed as the trait object for the same reason as `sink`: it
+            // is both handed to the `Player` and retained on `Runtime`
+            // for the voice swap to reuse.
+            let now_playing: Arc<dyn NowPlaying> = Arc::new(MediaRemote);
+            let player =
+                Player::new(engine, Arc::clone(&sink)).with_now_playing(Arc::clone(&now_playing));
             let core = App::new(player, startup.speed);
 
             let status_item = MenuItem::with_id(app, "status", STATUS_READY, false, None::<&str>)?;
@@ -1072,6 +1102,7 @@ fn main() {
                 read_region_item,
                 pause_item,
                 sink,
+                now_playing,
                 // Nothing registered yet, same as the region slot below.
                 registered_pause_shortcut: Mutex::new(None),
                 // Nothing is registered with the OS yet — the block below
@@ -1269,6 +1300,35 @@ fn main() {
                     }
                 }
                 refresh_pause_label(&rt);
+            }
+
+            // The physical play/pause media key (F8), via
+            // `MPRemoteCommandCenter` — the only route to it that needs
+            // no Accessibility grant. Registering a handler is half of
+            // what makes Aloud eligible to be the Now Playing app; the
+            // other half is `MPNowPlayingInfoCenter.playbackState`, which
+            // the `Player` publishes at the real start and end of every
+            // read (src/now_playing/, src/play/player.rs).
+            //
+            // Registration must happen on the main thread, which `setup`
+            // is. Delivery does not: the system calls the handler on its
+            // own thread, and `handle_remote_command` ends in
+            // `refresh_pause_label`, which mutates a tray `MenuItem` —
+            // AppKit UI. Hence the hop back to the main thread, rather
+            // than trusting an undocumented callback thread to be the
+            // right one.
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                install_remote_commands(Arc::new(move |cmd| {
+                    let for_state = handle.clone();
+                    if let Err(e) = handle.run_on_main_thread(move || {
+                        let rt = Arc::clone(for_state.state::<Arc<Runtime>>().inner());
+                        handle_remote_command(&rt, cmd);
+                    }) {
+                        aloud::log_line!("remote command: could not reach the main thread: {e}");
+                    }
+                }));
             }
 
             // The selection path is a macOS Service, not a hotkey we own:

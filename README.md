@@ -20,13 +20,26 @@ halts mid-sentence and continues from the exact sample, with nothing
 re-read and nothing already synthesised thrown away. Pressing it while
 nothing is speaking does nothing.
 
-It is an ordinary chord, not the keyboard's play/pause **media** key.
-That is deliberate and permanent: media keys are the only path in
-`global-hotkey` that creates a `CGEventTap`, and an active tap from an
-untrusted process is refused outright — measured on this machine, macOS
-26.6 (`docs/media-key-control-research.md` §4). Aloud never asks for
-Accessibility, so it never takes that route. A side benefit is that
-pause keeps working while Spotify or Music has the media keys.
+The keyboard's physical **play/pause key (F8)** also pauses and resumes
+Aloud — but only while it is actually speaking. The moment a read ends,
+the key goes back to controlling whatever was playing before it. Aloud
+appears in Control Centre's Now Playing module for the same reason, and
+for exactly as long.
+
+This is not a hotkey binding, and F8 cannot be bound as one. Media keys
+are the only path in `global-hotkey` that creates a `CGEventTap`, and an
+active tap from an untrusted process is refused outright — measured on
+this machine, macOS 26.6 (`docs/media-key-control-research.md` §4). Aloud
+never asks for Accessibility, so it never takes that route. Instead it
+registers with `MPRemoteCommandCenter` and reports its playback state to
+macOS, which needs no permission of any kind
+(`docs/2026-08-10-media-key-phase2.md`). `Cmd+Shift+P` and the tray item
+stay the reliable controls: they are ordinary triggers that always mean
+Aloud, whoever currently owns the media keys.
+
+One thing worth knowing: macOS has no way to make one app's audio
+interrupt another's, so if you leave music playing and start a read, you
+will hear both. Aloud takes the *key*, not the speakers.
 
 Both the region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
@@ -67,6 +80,14 @@ grant and no clipboard use at all. `NSServices` also supports
 `NSKeyEquivalent`, which is how Aloud ships a default shortcut
 (Cmd+Shift+A) for the Service without needing Accessibility at all — see
 above.
+
+The same rule governs the media key. Reading F8 by tapping the event
+stream would need Accessibility (or, for the listen-only variant, Input
+Monitoring); Aloud instead registers a `MPRemoteCommandCenter` handler
+and publishes its playback state, which macOS gates behind no permission,
+no entitlement, and no `Info.plist` key. The built bundle carries no
+entitlements at all — `codesign -d --entitlements - target/Aloud.app`
+prints nothing.
 
 If a permission problem (or another failure on the hotkey path — OCR
 finding no text, or the OCR helper itself failing) stops a read from

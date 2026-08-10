@@ -2,6 +2,7 @@ pub mod app;
 pub mod capture;
 pub mod log;
 pub mod login_item;
+pub mod now_playing;
 pub mod ocr;
 pub mod play;
 pub mod selection;

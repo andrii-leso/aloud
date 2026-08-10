@@ -57,12 +57,20 @@ conclusive · **UNVERIFIED** = says what would settle it.
   ⚠ One caveat with teeth: btrcd's README notes it must be a real `.app` bundle — as a bare binary
   it did not receive next/previous events. **Test `target/Aloud.app`, never `cargo run`**, or you
   get a false negative. (btrcd's own testing was 10.12.3, circa 2017.)
-- **UNVERIFIED — whether ad-hoc / self-signed ("Aloud Dev") signing changes anything.** No evidence
-  either way; no report ties `MPRemoteCommandCenter` failure to signing identity, and the only
-  entitlement in play is Apple-private and iOS-scoped. **What settles it:** run the bundled app,
-  set `playbackState = .playing`, and watch Console for
-  `[NowPlaying] [MRNowPlaying] Ignoring setPlaybackState because application does not contain
-  entitlement…`. Absence of that line = settled. Ten minutes.
+- ~~**UNVERIFIED** — whether ad-hoc / self-signed ("Aloud Dev") signing changes anything.~~
+  **SETTLED 2026-08-10 by direct measurement — self-signing changes nothing.** A throwaway
+  bundle signed with the same "Aloud Dev" identity was accepted outright: `mediaremoted` logged
+  `Adding client <MRDMediaRemoteClient …, bundleIdentifier = …, entitlements=0>` and then
+  `PlaybackState changed from Unknown to Playing`. No `Ignoring setPlaybackState` line, no
+  refusal of any kind, in a `log stream` covering the whole window. Evidence and method:
+  [`2026-08-10-media-key-phase2.md`](2026-08-10-media-key-phase2.md) §3.
+- **CORRECTED 2026-08-10 — "the app must actually be playing" is too strong; the *audio* is
+  not what qualifies you.** A three-way control run of the same probe, which plays no audio at
+  all, isolates the requirement exactly: registering ≥1 remote command **is** required (with
+  metadata but no command handler, the probe never became Now Playing), publishing
+  `nowPlayingInfo` **is not** (with a command handler but no metadata, it did). What macOS
+  actually acts on is `playbackState = .playing` plus at least one supported command. The
+  `btrcd` corroboration above was pointing the right way.
 
 **What this means for Aloud.** The sanctioned route exists, is available on every macOS Aloud
 targets, and asks for nothing — no prompt, no entitlement, no plist key, no AVFoundation. The
@@ -96,19 +104,25 @@ vs bare binary) and one short empirical test clears both.
   "most recent source wins" claim appears only in SEO-grade blog content and is deliberately not
   cited here. The only Apple-published timeout is UI-scoped, not key-routing-scoped: the Touch Bar
   Now Playing button disappears after eight minutes without media.
-- **UNVERIFIED, and this is the decisive one — does releasing hand the keys *back* to Spotify, or
-  leave them dead?** The 685333 premise hints that "dead" may actually mean "Music.app launches",
-  which would be a bad outcome. **What settles it:** start Spotify playing, trigger an Aloud read,
-  press play/pause (expect: Aloud responds, Spotify does not), let Aloud finish so it sets
-  `.stopped`, press play/pause again — and observe whether Spotify resumes, nothing happens, or
-  Music.app launches. Fifteen minutes with the built app.
+- ~~**UNVERIFIED, and this is the decisive one** — does releasing hand the keys *back* to Spotify,
+  or leave them dead?~~ **SETTLED 2026-08-10 at the arbitration layer: control returns.**
+  `mediaremoted` logged the round trip in both directions, twice, with Music.app running:
+  `ActiveNowPlayingClient changed from 【 com.apple.Music (39472) Music 】 to 【 <probe> 】` on
+  `.playing`, and `changed from 【 <probe> 】 to 【 com.apple.Music (39472) Music 】` on
+  `.stopped`. Nothing was left ownerless and nothing was launched. The one residual is that this
+  is the Now Playing *client* handover rather than a physical F8 press, and Music was running
+  but not actively playing — the owner's five-minute script closes both. See
+  [`2026-08-10-media-key-phase2.md`](2026-08-10-media-key-phase2.md) §3-§4.
 
 **What this means for Aloud.** The takeover is real but **scoped and self-releasing**: Aloud would
 hold the play/pause key only while it is actually speaking, and hand it back the moment a read ends.
 That is defensible — the key controls whatever is playing *now*. The unacceptable failure mode is
 not the takeover, it is the hand-*back*: if releasing leaves the key dead or launches Music.app, the
-owner's music is worse off after every read. **Do not ship this feature until that one test has been
-run.** It is cheap, and it is the whole UX risk.
+owner's music is worse off after every read. ~~**Do not ship this feature until that one test has
+been run.**~~ It is cheap, and it is the whole UX risk.
+
+> **2026-08-10 — the test has been run, and it came back clean.** See the corrected bullet above.
+> The gate now rests on the owner's own F8 presses, not on this unknown.
 
 ---
 

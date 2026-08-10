@@ -528,11 +528,25 @@ All paths under `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`.
   down events if one of the following conditions is true: The current process is running as
   the root user. Access for assistive devices is enabled."*
   https://developer.apple.com/documentation/coregraphics/1454426-cgeventtapcreate
-  The tap masks `SystemDefined` rather than key events, so the *documented* gate is arguably
-  not triggered (**LIKELY**, not verified, that it works untrusted on macOS 26) — but the
+  ~~The tap masks `SystemDefined` rather than key events, so the *documented* gate is arguably
+  not triggered (**LIKELY**, not verified, that it works untrusted on macOS 26)~~ — but the
   risk is real and the mitigation is free: **reject media keys in the rebind UI and the tap
   is never created.** Failure is at least reported (`Error::FailedToWatchMediaKeyEvent` when
   the tap comes back null), not silent.
+
+  > **CORRECTED 2026-08-10 — the struck sentence above was wrong, and it was wrong in the
+  > dangerous direction.** Direct measurement on this machine (macOS 26.6, 25G72) settled it:
+  > the discriminator is not the mask, it is the tap **option**. An *active* tap
+  > (`kCGEventTapOptionDefault`, which is what `global-hotkey` 0.8.0 passes) returns `NULL`
+  > from an untrusted process **regardless of mask** — `SYSDEFINED`-only and `mouseMoved`-only
+  > fail identically — and that maps to the **Accessibility** pane. A listen-only tap is
+  > created but arrives `enabled=false` without **Input Monitoring**. Upstream confirms the
+  > prompt: [global-hotkey PR #71](https://github.com/tauri-apps/global-hotkey/pull/71),
+  > *"it will only ask when registering media keys"*. The mitigation this bullet recommends
+  > is therefore not merely prudent, it is required. Full table and sources:
+  > [`media-key-control-research.md`](media-key-control-research.md) §4. The media key is
+  > nonetheless reachable — via `MPRemoteCommandCenter`, which is not a tap and needs no
+  > grant at all; see [`2026-08-10-media-key-phase2.md`](2026-08-10-media-key-phase2.md).
 - **VERIFIED — API surface** (`tauri-plugin-global-shortcut-2.3.2/src/lib.rs`):
   `register` (:131), `on_shortcut` (:143), `unregister` (:182), `unregister_all` (:220),
   `is_registered` (:232). Error type `Error::{GlobalHotkey(String), RecvError, Tauri}`

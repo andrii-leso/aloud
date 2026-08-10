@@ -59,6 +59,20 @@ impl fmt::Display for ChordError {
 /// `CGEventTapCreate` — and therefore the only one that can produce an
 /// Accessibility / Input Monitoring prompt. Rejecting them means the tap
 /// is never created.
+///
+/// This is measured, not precautionary. `global-hotkey` 0.8.0 passes
+/// `CGEventTapOptions::Default` (the *active* option), and upstream
+/// states plainly that it *"will trigger OS to request `Accessibility`
+/// permission"* — [PR #71](https://github.com/tauri-apps/global-hotkey/pull/71).
+/// On this machine (macOS 26.6, 25G72) an active tap from an untrusted
+/// process returns `NULL` whatever it masks, so the feature would not
+/// even work in exchange for the prompt.
+///
+/// **This list is not what makes the play/pause media key work.** That is
+/// `src/now_playing/` — `MPRemoteCommandCenter`, which is a registration
+/// surface rather than a tap and needs no grant of any kind. The two are
+/// unrelated paths and this denylist stays exactly as it is: it guards
+/// *hotkey rebinding*, which must never reach the tap.
 const MEDIA_KEYS: [&str; 5] = [
     "MediaPlayPause",
     "MediaTrackNext",

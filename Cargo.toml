@@ -44,6 +44,11 @@ dirs = "5.0"
 # entire framework.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
+# `MPRemoteCommand::addTargetWithHandler:` takes an Objective-C block, so
+# the handler in src/now_playing/macos.rs is an `RcBlock`. Already in the
+# lockfile (objc2-media-player and tauri's own AppKit stack both use it);
+# named here because this crate now reaches for it directly.
+block2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSApplication",
@@ -58,6 +63,34 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     # objc2-service-management's own feature set, which happens to enable
     # it today — this crate names what it uses.
     "NSError",
+    # `MPNowPlayingInfoCenter.nowPlayingInfo` is an NSDictionary, built
+    # with `NSDictionary::from_slices` (which is itself gated on
+    # NSObject). Same rule as NSError above: objc2-media-player's own
+    # feature set happens to enable both today, but this crate names what
+    # it uses.
+    "NSDictionary",
+    "NSObject",
+] }
+# MediaPlayer, for the physical play/pause media key (src/now_playing/).
+# `MPRemoteCommandCenter` is the only route to that key which needs no TCC
+# grant — a `CGEventTap` prompts for Accessibility, which Aloud must never
+# require (docs/media-key-control-research.md §4). Same objc2 0.3.x
+# generation as the crates above: adding it resolved exactly one new
+# package and zero new transitive dependencies. Features are the minimum
+# reached by src/now_playing/macos.rs, out of the crate's 43. Deliberately
+# NOT `souvlaki`, the obvious cross-platform choice: on macOS it depends on
+# the previous-generation objc 0.2 + cocoa 0.24 stack, which would put two
+# independent Objective-C binding ecosystems in one binary.
+objc2-media-player = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "MPRemoteCommandCenter",
+    "MPRemoteCommand",
+    "MPRemoteCommandEvent",
+    "MPNowPlayingInfoCenter",
+    # MPMediaItemPropertyTitle, the one metadata key published.
+    "MPMediaItem",
+    # `addTargetWithHandler:` takes a block.
+    "block2",
 ] }
 # SMAppService, for launch-at-login. Same objc2 0.3.x generation as the
 # two crates above, so it costs no new bindings generation. Deliberately
