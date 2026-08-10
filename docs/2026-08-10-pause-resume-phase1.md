@@ -172,6 +172,14 @@ asserting both directions. It is re-rendered after every mutation point: both to
 `Stop` (which clears the pause), and the end of a read on all paths including the error unwind.
 When no chord is registered it renders as a bare `Pause` rather than advertising an empty one.
 
+> **Amended with the chord's removal.** The item itself, its ground-truth rendering and its
+> re-render points are all unchanged and still shipped — this is the paragraph's durable half.
+> Two details are not: the signature is now `pause_label(paused)` (the `accel` parameter went
+> with the chord), and the last sentence is obsolete — there is no longer a chord to advertise
+> in *any* state, so the label is unconditionally bare. That is a rule, not an accident: naming
+> ⌘⇧A there would be a lie in exactly the no-selection case the item exists to cover, and
+> `advertises_no_chord` asserts the label carries no parenthesised chord.
+
 **Hotkey. — REMOVED, see the banner at the top.** The three paragraphs below describe a chord
 that no longer exists. `Runtime.registered_pause_shortcut`, `is_pause_shortcut`, the handler
 dispatch and the registration block are all gone; the global-shortcut handler is back to one
@@ -238,6 +246,20 @@ New coverage:
 | `rodio_really_pauses_without_discarding_buffers` (ignored) | the above, against a real audio device |
 | `pause_label_tests` (×3) | the tray item names the action, not the state |
 | 4 × `tests/settings.rs` | old configs load; media keys don't survive on the new field; the default chord is bindable |
+
+**Which of these survived the chord's removal.** Everything in the table above still stands
+except the rows that pinned the chord itself. Removed: `a_media_key_pause_shortcut_does_not_survive_a_load`,
+`an_empty_pause_shortcut_falls_back_to_the_default`,
+`the_default_pause_chord_is_accepted_by_the_shortcut_validator`, and
+`pause_label_tests::renders_the_shipped_default_chord`. The remaining two `pause_label_tests`
+were rewritten for the one-argument signature, one of them (`advertises_no_chord`) now asserting
+the *absence* of a chord in the label. Added in their place:
+`a_settings_file_still_carrying_the_retired_pause_shortcut_loads_untouched`, the migration guard
+— verified adversarially by temporarily adding `deny_unknown_fields` and watching it fail exactly
+as predicted (region shortcut and voice both reset). Worth knowing that the owner's live
+`settings.json` turns out **not** to carry the retired key, because the Phase 1 bundle was never
+installed, so that guard is not currently load-bearing for him. All six `tests/player_pause.rs`
+tests are untouched. Suite total after the removal: **186 passed, 0 failed, 3 ignored**.
 
 `cargo clippy --release --all-targets` produces 6 warnings, all pre-existing and all in files this
 change does not touch (`src/text/chunk.rs`, `src/vendor/`). `cargo fmt` applied.

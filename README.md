@@ -54,12 +54,23 @@ collided with VS Code's Command Palette, which a global hotkey wins while
 Aloud is running.
 
 Aloud binds no **media** keys, here or anywhere. That is deliberate and
-permanent: media keys are the only path in `global-hotkey` that creates a
+permanent, and it now rests on two separate results rather than one.
+Media keys are the only path in `global-hotkey` that creates a
 `CGEventTap`, and an active tap from an untrusted process is refused
 outright — measured on this machine, macOS 26.6
 (`docs/media-key-control-research.md` §4). Aloud never asks for
-Accessibility, so it never takes that route. A side benefit is that
-Aloud's keys keep working while Spotify or Music has the media keys.
+Accessibility, so it never takes that route.
+
+The one route that needed no tap and no permission — registering with
+`MPRemoteCommandCenter`, the way Music and Spotify do — was actually
+built and then dropped. Holding the play/pause key while Aloud speaks is
+only acceptable if Aloud hands it back when the read ends, and on the
+owner's own test it did not: after a read finished, the key no longer
+returned control to Music.app. That leaves your music worse off after
+every read, which is worse than not having the feature. The branch is
+kept unmerged at the tag `experiment/media-key-mpremote` and is not part
+of any build. A side benefit of binding no media keys at all is that
+Aloud's keys keep working while Spotify or Music has them.
 
 The region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"

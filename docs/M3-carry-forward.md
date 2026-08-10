@@ -40,7 +40,9 @@ The design spec's "~1.5s to first word" comes from a near-idle measurement and h
 
 `speed` must stay clamped to 0.7–2.0 (the CLI does this): chunks cap at 120 chars, and below ~0.27x one chunk exceeds 30s of audio and false-positives the player's stall watchdog.
 
-**CORRECTED, 2026-08-10 — that clamp was never the real hazard, and the upper half of the range was actively broken.** Supertonic's `speed` is not a playback control: `_infer` does `duration /= speed` and the result sizes the decoder's latent, so any value above ~1.1x hands the decoder less room than its own duration predictor asked for and it silently elides phonemes, then whole words. Measured across six texts: at 1.5x, four of six lost content; at 2.0x, all six did; short utterances degrade first (a two-word heading breaks at 1.25x). Aloud now always synthesises at 1.0 and retimes the rendered audio in `src/tts/timestretch.rs`. Evidence and method: [`2026-08-10-text-drop-diagnosis.md`](2026-08-10-text-drop-diagnosis.md).
+**CORRECTED, 2026-08-10 (a) — the ~0.27x figure above is wrong, and it is contradicted later in this very file.** It was computed from a 120-char cap applied to *every* chunk. Finding 4 below ("Ordinary sentences were chopped mid-clause") split that into `FIRST_CHUNK_CHARS = 120` and `LATER_CHUNK_CHARS = 300`, and a 300-char chunk is roughly 20s of audio at 1.0x. The real threshold is therefore around **0.65-0.67x**, so the shipped 0.7 floor has **1-4 seconds** of margin against the 30s stall watchdog, not thirty. The clamp is right; the reason recorded for it was off by more than an order of magnitude. See the `STALL_TIMEOUT` comment in `src/play/player.rs`, which carries the current arithmetic, and do not raise `LATER_CHUNK_CHARS` or lower the floor without redoing it.
+
+**CORRECTED, 2026-08-10 (b) — that clamp was never the real hazard, and the upper half of the range was actively broken.** Supertonic's `speed` is not a playback control: `_infer` does `duration /= speed` and the result sizes the decoder's latent, so any value above ~1.1x hands the decoder less room than its own duration predictor asked for and it silently elides phonemes, then whole words. Measured across six texts: at 1.5x, four of six lost content; at 2.0x, all six did; short utterances degrade first (a two-word heading breaks at 1.25x). Aloud now always synthesises at 1.0 and retimes the rendered audio in `src/tts/timestretch.rs`. Evidence and method: [`2026-08-10-text-drop-diagnosis.md`](2026-08-10-text-drop-diagnosis.md).
 
 ## Deferred minors (none blocking)
 
@@ -124,9 +126,22 @@ came from this file. Keep it.
 
 ## Still open
 
-- Region shortcut is not rebindable from the tray (Andrii asked for this).
-- The "Read Selection" tray item is disabled/informational and reads as broken; relabel
-  it now that the Service demonstrably works.
-- Tray icon: square + "A" read well at 22pt; the crosshair and speaker corners do not.
+*As written 2026-08-09. Three of the four closed in M4 — resolutions noted inline so the
+list is not read as a live backlog. Current open work lives in [`HANDOFF.md`](HANDOFF.md).*
+
+- ~~Region shortcut is not rebindable from the tray (Andrii asked for this).~~ **DONE (M4)** —
+  rebindable in the settings window, with a chord recorder, a system-shortcut denylist and a
+  liveness probe that confirms the new chord actually fires.
+- ~~The "Read Selection" tray item is disabled/informational and reads as broken; relabel
+  it now that the Service demonstrably works.~~ **DONE (M4)** — it now reads
+  "Read / Pause Selection  (⌘⇧A, or the Services menu)", worded as a statement of fact
+  rather than an instruction, and updated again when ⌘⇧A became a toggle.
+- ~~Tray icon: square + "A" read well at 22pt; the crosshair and speaker corners do not.~~
+  **DONE (M4), and only half the way this reads.** The **crosshair was dropped** — at (6, 38)
+  with 6pt arms it straddled the square's own top-left corner and fused into it as a thicker
+  stroke. The **speaker was kept**: the failing versions had tucked it *inside* the corner,
+  where it merged with the frame stroke; redrawn to straddle the corner it sits against
+  transparency and reads fine. The shipped glyph is square + "A" + speaker
+  (`icons/make_tray_icon.swift`, hand-run — it is not part of any build).
 - The `I'd` → `l'd` OCR misread has a normaliser fix in place but was never reproduced;
-  if it recurs, capture the raw helper output before blaming the fix.
+  if it recurs, capture the raw helper output before blaming the fix. **Still open.**

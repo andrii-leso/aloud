@@ -410,8 +410,12 @@ dates as returned — none invented):
    bump was closed unmerged. Its default mode writes a LaunchAgent pointing at the bare
    `Contents/MacOS/aloud`, and its AppleScript mode would introduce a brand-new Automation
    TCC prompt.
-2. **Spike `SMAppService.mainApp.register()` on the self-signed bundle before designing
-   around it.** Apple documents no CA requirement and Aloud's DR is stable and non-ad-hoc —
+2. **~~Spike `SMAppService.mainApp.register()` on the self-signed bundle before designing
+   around it.~~ DONE 2026-08-10 — spiked, green, and the feature is built.** The bundle is
+   accepted (`TeamIdentifier=not set`, no Apple anchor, no `BTMErrorDomain -98`); see the
+   SETTLED block in "Does it work for a self-signed, non-notarized app?" above and
+   [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md). Original wording, for
+   the record: Apple documents no CA requirement and Aloud's DR is stable and non-ad-hoc —
    but BTM's behaviour for a non-Apple-anchored leaf is unverified, and its failure mode
    (`failed to construct identifier`) is undocumented. Owner sign-off first: this writes
    persistent system state that survives app deletion (`sfltool resetbtm` to undo).
@@ -420,7 +424,10 @@ dates as returned — none invented):
    Read `.status` on every launch as the single source of truth, route the user with
    `SMAppService.openSystemSettingsLoginItems()`, and never re-`register()` to "fix" a
    deliberate opt-out.
-4. **If the fallback is a hand-written LaunchAgent, name it `com.andriileso.aloud.plist`,
+4. **Moot as of 2026-08-10 — there is no fallback; `SMAppService` works.** Kept because the
+   *reason* still governs anything that ever launches Aloud: launching the inner executable
+   bypasses LaunchServices and kills the Service. Original text follows.
+   **If the fallback is a hand-written LaunchAgent, name it `com.andriileso.aloud.plist`,
    point `ProgramArguments` at the bundle (via `/usr/bin/open -a`), not the bare binary, and
    expect the Login Items row to read "Aloud Dev".** `TeamIdentifier=not set` means
    `AssociatedBundleIdentifiers` will not bind, and launching the inner executable directly
@@ -533,6 +540,22 @@ All paths under `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/`.
   risk is real and the mitigation is free: **reject media keys in the rebind UI and the tap
   is never created.** Failure is at least reported (`Error::FailedToWatchMediaKeyEvent` when
   the tap comes back null), not silent.
+
+  > **CORRECTED 2026-08-10 — the "arguably not triggered" hedge above is wrong, and the
+  > real answer is worse than gated.** Measured directly on this machine (macOS 26.6, from a
+  > process with `AXIsProcessTrusted=false`): the discriminator is not the mask, it is the
+  > tap **option**. A `SystemDefined`-only tap created with the *active* option
+  > (`kCGEventTapOptionDefault` — which is what `global-hotkey` 0.8.0 uses) returns `NULL`;
+  > a `mouseMoved` active tap fails identically, so it is not mask-specific at all. The
+  > listen-only variant *is* created, and the `keyDown` bit is indeed cleared while bit 14
+  > survives — so this paragraph's reading of the documented gate was right — but the tap
+  > comes back **`enabled=false`**, i.e. it delivers nothing without Input Monitoring
+  > (`kTCCServiceListenEvent`). Full matrix and the control that rules out an artifact:
+  > [`media-key-control-research.md`](media-key-control-research.md) §4. The mitigation the
+  > paragraph recommends is unchanged and shipped — it is now justified by measurement
+  > rather than by prudence. The separate `MPRemoteCommandCenter` route, which needs no tap
+  > at all, was later built and **dropped** on a failed hand-back test; see that doc's top
+  > banner before proposing it.
 - **VERIFIED — API surface** (`tauri-plugin-global-shortcut-2.3.2/src/lib.rs`):
   `register` (:131), `on_shortcut` (:143), `unregister` (:182), `unregister_all` (:220),
   `is_registered` (:232). Error type `Error::{GlobalHotkey(String), RecvError, Tauri}`
@@ -875,6 +898,11 @@ Apple's own comparison
 
 ### What this means for M4
 
+**All four recommendations in this section are implemented.** `packaging/make-app.sh` signs
+inside-out with a scoped helper identifier, hard-fails on a missing certificate, adds no
+entitlements or usage-description keys, and the README's first-launch instructions were
+rewritten. Kept as written so the reasoning stays findable.
+
 1. **Drop `--deep` and sign inside-out, giving the helper a scoped identifier:**
    `codesign --force --sign "Aloud Dev" -i com.andriileso.aloud.aloud-ocr Contents/MacOS/aloud-ocr`
    first, then the outer bundle. Apple deprecated `--deep` for signing in macOS 13 and warns
@@ -884,6 +912,8 @@ Apple's own comparison
    `--sign -`.** Apple documents ad-hoc DRs as tied to that exact build, which is precisely
    the Screen Recording regrant loop M3 hit. Make a missing "Aloud Dev" cert **fail the
    build**, not warn — the current warn-and-continue reproduces the original bug.
+   **DONE (M4 Task 10):** `packaging/make-app.sh` now `exit 1`s on a missing certificate.
+   The warn-and-fall-back path no longer exists.
 3. **Do not add `NSScreenCaptureUsageDescription`, hardened runtime, entitlements, or
    `--timestamp`.** The first key does not exist on macOS 26.6; the rest buy nothing under a
    self-signed cert (notarization rejects it outright) and only add ways to break a working
@@ -1001,10 +1031,12 @@ produces no error, no log, and no visible symptom other than "it doesn't work".
 3. **Add an identifier-consistency assertion to `packaging/make-app.sh`** — read `identifier`
    out of `tauri.conf.json` and fail the build if it differs from the `CFBundleIdentifier`
    being written. Same shape as the existing `NSServices` post-merge check, which already
-   caught this class of bug once.
+   caught this class of bug once. **DONE** — the script reads both and `exit 1`s on a
+   mismatch.
 4. **Keep every bundle mutation before the `codesign` call, and make the missing-certificate
    case a hard failure.** The current fallback to ad-hoc with a warning silently reintroduces
-   the exact TCC bug that cost M3 a debugging session.
+   the exact TCC bug that cost M3 a debugging session. **DONE (M4 Task 10)** — there is no
+   ad-hoc fallback left.
 
 ---
 
@@ -1017,9 +1049,9 @@ produces no error, no log, and no visible symptom other than "it doesn't work".
 | 3 | Autostart LaunchAgent execs `Contents/MacOS/aloud`, bypassing LaunchServices | App starts at login but **Services → Read Aloud** may vanish | Plugin applies the `.app`-path fix only in AppleScript mode; README documents the Service needs an installed bundle |
 | 4 | `tao::set_focus()` is a no-op on a non-visible window | Settings window opens behind everything, unfocused | `tao-0.35.3/.../window.rs:677-685` |
 | 5 | Losing Tauri's default app menu kills ⌘C/⌘V in the settings window | Right-click paste works, keyboard paste doesn't | tauri#1055; `tauri-2.11.5/src/menu/menu.rs:214-227`, `app.rs:1620` |
-| 6 | Ad-hoc signing fallback re-keys the DR to the cdhash | Screen Recording silently dead after every rebuild, while System Settings still shows it enabled | TN3127; already cost M3 a session; `make-app.sh` still *warns* rather than failing |
+| 6 | ~~Ad-hoc signing fallback re-keys the DR to the cdhash~~ **CLOSED — the fallback was removed** | Was: Screen Recording silently dead after every rebuild, while System Settings still shows it enabled | TN3127; already cost M3 a session. `make-app.sh` now **fails the build** on a missing "Aloud Dev" cert (M4 Task 10); there is no ad-hoc path left to take |
 | 7 | tao calls `activateIgnoringOtherApps` unconditionally at launch — **real, but harmless for Aloud (measured 2026-08-10)** | ~~App grabs focus at every login once autostart is on~~ **No observable grab**: it runs after the policy is set to `Accessory`, and there is no window at launch to bring forward. Would bite a regular-policy app, or Aloud if it ever opens a window at startup | `tao-0.35.3/.../app_delegate.rs:107` + `app_state.rs:291-293`; tauri#15017 still not landed. Frontmost app unchanged across 20 samples spanning a launch: [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md) |
-| 8 | Media keys are the one path that creates a `CGEventTap` | An Accessibility/Input-Monitoring prompt appears in an app that promises never to ask | `global-hotkey-0.8.0/.../macos/mod.rs:140-147, 206-213` |
+| 8 | Media keys are the one path that creates a `CGEventTap` — **still true; the symptom below was wrong** | ~~An Accessibility/Input-Monitoring prompt appears~~ **Measured 2026-08-10: no prompt at all.** An *active* tap simply returns `NULL`, and the listen-only variant is created **disabled**. So a media-key binding fails silently-ish rather than begging for permission — the denylist stays, for a better reason | `global-hotkey-0.8.0/.../macos/mod.rs:140-147, 206-213`; measurement matrix in [`media-key-control-research.md`](media-key-control-research.md) §4 |
 | 9 | `auto-launch`'s `is_enabled()` is a file-existence check | Toggle shows "on" after the user turned it off in System Settings | `auto-launch` 0.5.0 `src/macos.rs` |
 | 10 | `SMAppService` registration persists after the app is deleted | Stale enabled Login Items row; re-register fails confusingly. **Observed 2026-08-10:** a normal `unregister()` leaves the status at `NotRegistered`, not `NotFound` — the record survives, disabled. That is the supported off state; only `sfltool resetbtm` + reboot erases it, and that resets every app on the machine | Apple DTS thread 707482; `sfltool resetbtm`; [`2026-08-10-launch-at-login.md`](2026-08-10-launch-at-login.md) |
 | 11 | `unregister()` on an unregistered chord returns `Ok(())` | Cleanup appears to succeed while the old chord stays live | `global-hotkey-0.8.0/.../macos/mod.rs:163-165` |
@@ -1027,13 +1059,17 @@ produces no error, no log, and no visible symptom other than "it doesn't work".
 | 13 | Bundle identifier hard-coded in two files | User config silently written to a different directory | `tauri.conf.json` vs `packaging/make-app.sh`; nothing cross-checks |
 | 14 | `NSScreenCaptureUsageDescription` does not exist | Adding it looks like a fix and does nothing | `strings` on `tccd`, macOS 26.6 — 40 usage-description keys, none for screen capture |
 | 15 | Editing `Info.plist` after `codesign` | App still launches; TCC grant silently invalid | `_CodeSignature/CodeResources` seals the plist |
-| 16 | Plugin IPC permissions default to empty | Settings page's `register` call is denied with no obvious cause | `permissions/default.toml`; Aloud has no `capabilities/` |
+| 16 | Plugin IPC permissions default to empty | Settings page's `register` call is denied with no obvious cause | `permissions/default.toml`. **Resolved differently than anticipated:** `capabilities/default.json` now exists but deliberately grants **no** `global-shortcut` permission — the page never calls that plugin, and all hotkey registration happens in Rust. The file only authorises `core:event` and the window close |
 | 17 | Two builds of the same bundle id on disk | Intermittent LaunchServices misbehaviour | Apple DTS thread 726826; `target/Aloud.app` + `/Applications/Aloud.app` |
 | 18 | `IntlBackslash` is in neither the parser nor the scancode table | ISO-keyboard users get a hard failure on that key | `global-hotkey-0.8.0/src/hotkey.rs` + `macos/mod.rs:411-520` |
 
 ---
 
 ## Contradictions with existing Aloud docs
+
+**Both README contradictions below were fixed in the M4 packaging change set; the current
+README documents the Open Anyway path and the "Aloud Dev" certificate. Kept as a record of
+what was wrong and why.**
 
 1. **`README.md` §Building — "right-click the app in Finder and choose Open"** is stale.
    Apple's current documentation for macOS 15/26 describes only System Settings → Privacy &

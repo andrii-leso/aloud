@@ -10,6 +10,27 @@ keyboard, without ever asking for Accessibility?
 (`MPRemoteCommandCenter`) needs no TCC grant at all. And the audio layer cannot pause at all today,
 which is the real gating work regardless of which key triggers it.
 
+> **OUTCOME, 2026-08-10 — the recommendation was followed, and the media key was then DROPPED.
+> Read this before acting on anything below.** Both halves of the research were carried out.
+> The audio-layer work (§5) shipped and stands. The `MPRemoteCommandCenter` route (§1-§3) was
+> implemented as Phase 2 — F8 routed to the existing `toggle_pause`, `objc2-media-player` 0.3.2,
+> next/previous/seek explicitly disabled, no user text in `nowPlayingInfo` — and it cleared every
+> programmatic check, including `mediaremoted` logging a handover in both directions.
+>
+> **Then the owner pressed the key, and the one test §2 called decisive failed: when a read
+> ended, control did not return to Music.app.** That is precisely the "worse than not having the
+> feature" outcome §2 names — the owner's music controls stay broken after every read — so the
+> feature was dropped rather than shipped. Note the shape of this: the programmatic evidence said
+> the hand-back worked, and pressing the key by hand said otherwise. §2 was right to insist on
+> the physical test and right that fifteen minutes of it settles the question.
+>
+> The work is preserved, unmerged, at tag `experiment/media-key-mpremote` (parent `00d044f`);
+> its report `docs/2026-08-10-media-key-phase2.md` exists **only on that tag**. On `main` Aloud
+> binds no media keys by any mechanism. Pause is ⌘⇧A and the tray item.
+>
+> What survives as durable: §4's `CGEventTap` measurement (the denylist's justification),
+> §3's crate reachability facts, and §6's "simpler alternatives", both of which shipped.
+
 Tags: **VERIFIED** = primary source cited, or executed here · **LIKELY** = named evidence, not
 conclusive · **UNVERIFIED** = says what would settle it.
 
@@ -109,6 +130,14 @@ That is defensible — the key controls whatever is playing *now*. The unaccepta
 not the takeover, it is the hand-*back*: if releasing leaves the key dead or launches Music.app, the
 owner's music is worse off after every read. **Do not ship this feature until that one test has been
 run.** It is cheap, and it is the whole UX risk.
+
+> **RESOLVED 2026-08-10 — the test was run by hand, and it came back bad.** Phase 2 was built and
+> the owner pressed the key. After a read ended, **control never returned to Music.app** — the
+> exact failure this paragraph gates on. The feature was dropped, not shipped. This section's
+> judgement was correct in every part: the risk was the hand-back and nothing else, and the
+> decisive evidence was a human pressing a key, not a log line. `mediaremoted` had recorded a
+> handover in both directions during the programmatic pass, which is why the physical test was
+> not redundant. Preserved unmerged at tag `experiment/media-key-mpremote`.
 
 ---
 
@@ -293,13 +322,22 @@ a framework, a Now Playing session, and one unverified hand-back behaviour.
 
 *A proposal. The owner decides.*
 
+> **He decided, 2026-08-10: point 4's cheap alternative shipped; points 1-3's media key was built
+> and then dropped.** The §2 hand-back test failed under the owner's hand — control never went
+> back to Music.app when a read ended — so point 3's UNVERIFIED is now a VERIFIED *against*.
+> The recommendation's own logic delivers the outcome: "if that test is bad, the owner has lost
+> nothing and still has working pause/resume." That is exactly where the project stands. The
+> paragraphs below are the proposal as written; do not read them as an open plan.
+
 **1. Yes — the media key can pause and resume Aloud without an Accessibility prompt, but only via
 `MPRemoteCommandCenter`, never via an event tap.** The tap question that M4 left open is now
 settled against it: the gate is the tap *option*, not the mask, and `global-hotkey` 0.8.0 uses the
 active option that upstream confirms prompts for Accessibility. Even the listen-only variant needs
 Input Monitoring, still cannot suppress the key from Spotify, and would lose its grant on every
 rebuild under Aloud's self-signed identity. The `MEDIA_KEYS` denylist stays; its justification gets
-stronger, and `docs/M4-platform-research-macos.md:522-526` needs correcting.
+stronger, and `docs/M4-platform-research-macos.md` §3's media-key bullet needs correcting —
+**done 2026-08-10**, it now carries a CORRECTED block pointing back here (cited by section rather
+than by line number, since line numbers move).
 
 **2. What it costs.** Complexity is modest and lands in three places: one 28 KB crate
 (`objc2-media-player` 0.3.2, already version-compatible, zero new transitive deps); roughly 100 lines
