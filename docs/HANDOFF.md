@@ -79,6 +79,9 @@ report the OS's live status rather than what was saved.
 3. **No visible focus grab.** tao does call `activateIgnoringOtherApps` unconditionally,
    but Aloud is `Accessory` with no window at launch, so there is nothing to bring
    forward. Measured: the frontmost app was unchanged across 20 samples spanning a launch.
+   Scope note: that measured a *plain* launch. Delivering a **Service** message is a
+   different trigger and did steal focus — macOS activates the provider itself, launch or
+   no launch. Fixed 2026-08-10; see `docs/2026-08-10-selection-focus-steal.md`.
 
 Full evidence, the design, and the remaining manual step: `docs/2026-08-10-launch-at-login.md`.
 
