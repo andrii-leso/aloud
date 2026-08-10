@@ -17,9 +17,17 @@ use anyhow::Result;
 /// never touched — a deliberate owner decision, not an implementation
 /// detail. See `macos.rs`.
 ///
-/// Windows (M6) will synthesise Ctrl+C and read the clipboard; there is no
-/// equivalent permission gate there, so the privacy objection does not
-/// apply. This trait exists to hold that pull-shaped implementation.
+/// Windows (M6) has no such channel, so it must *pull*: hotkey → go and get
+/// the text. The mechanism is **UI Automation `TextPattern`**, not the
+/// clipboard — an earlier note here said Ctrl+C + `CF_UNICODETEXT`, and that
+/// route is now rejected (it writes every read into the user's Win+V history,
+/// cannot faithfully restore a multi-format clipboard, and is UIPI-blocked
+/// against elevated windows just as UIA is). UIA needs no permission grant on
+/// Windows. Rationale and the outcome mapping: `windows.rs`.
+///
+/// This trait exists to hold that pull-shaped implementation, and it is
+/// deliberately unchanged by it — the three UIA outcomes fold onto the two
+/// return shapes below without a new signature.
 pub trait SelectionSource: Send + Sync {
     /// Pull-style acquisition. Returns `Ok(None)` when nothing is selected.
     /// The macOS Service implementation is push-driven and returns

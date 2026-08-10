@@ -40,16 +40,66 @@ use std::path::Path;
 ///
 /// Any language UI must be driven from that enumeration, never a hardcoded list.
 ///
-/// # Ukrainian is expected to be absent, and `lingua` cannot rescue it
+/// # Ukrainian is absent — VERIFIED — and `lingua` cannot rescue it
 ///
-/// `Windows.Media.Ocr` appears to have no Ukrainian recognizer at any price
-/// (LIKELY — Microsoft Q&A, not an API reference; confirm with
-/// `Get-WindowsCapability -Online | ? Name -Like 'Language.OCR*'`). `lingua-rs`
-/// runs *after* OCR, so it can only classify glyphs the recognizer already
-/// produced: Ukrainian text pushed through the Russian model mangles і, ї, є, ґ
-/// before detection ever sees them. Aloud's four-language design is a
-/// three-language design on Windows. That is a real feature-parity gap against
-/// macOS Vision, not an oversight.
+/// `Windows.Media.Ocr` has **no Ukrainian recognizer at any price.** This was
+/// LIKELY when this stub was written (a Microsoft Q&A answer, not an API
+/// reference); it is now **VERIFIED** against Microsoft's LP-to-FOD mapping
+/// spreadsheet — the sheet carries 35 OCR locale rows, and `uk-ua` appears in
+/// the whole workbook exactly once, as a **Basic** language FOD with no OCR
+/// sibling. Other Cyrillic OCR does exist (`bg-bg`, `sr-cyrl-rs`), so the
+/// engine is not Cyrillic-incapable; Ukrainian is specifically absent.
+///
+/// `lingua-rs` runs *after* OCR, so it can only classify glyphs the recognizer
+/// already produced: Ukrainian text pushed through the Russian model mangles
+/// і, ї, є, ґ before detection ever sees them. That is a real feature-parity
+/// gap against macOS Vision, not an oversight.
+///
+/// **And it is worse than "three languages on Windows".** German and Russian
+/// OCR are *themselves* Features on Demand, present only if the user added
+/// those language features — so on a stock en-US machine this engine is a
+/// **one-language** design. The Ukrainian gap and the hard-constraint-1
+/// conflict ("zero runtime system dependencies" vs `Add-WindowsCapability`)
+/// are therefore one problem, not two: anything that fixes Ukrainian by
+/// bundling also removes the language-pack install step entirely.
+///
+/// # Seam note — what the designed replacement would change, and what it would not
+///
+/// A bundled ONNX engine (PP-OCRv5, ~20.6 MB, Apache-2.0) has been researched
+/// and costed as the fix for both halves above. It is **not built and not
+/// scheduled** — the decision is the owner's. Full analysis:
+/// `BKM/PC-Queue/TASK-M6-aloud-windows-prototype.md` §12. What matters *here*
+/// is which of this file's assumptions would survive it:
+///
+/// * **The `OcrEngine` trait does not change.** `recognise(&Path) -> Result<String>`
+///   stays as-is, and it must **not** grow a language parameter: the caller
+///   cannot know the language before any text exists, so that argument is
+///   circular. Two impls picked at runtime by language is rejected for the same
+///   reason. The shape that works is a **single composite impl** owning both
+///   recognizer models internally (shared language-agnostic detector run once,
+///   then both recognizers over the cropped lines, keep the better-scoring
+///   result) with the picker as a pure function — same idiom as
+///   `intent::decide_selection` and `text::detect::detect_lang`, unit-testable
+///   with fixture crops and no OS.
+/// * **`WindowsOcr::new() -> Result<Self>` is the assumption that does NOT
+///   survive.** It is zero-arg and cheap here because `Windows.Media.Ocr` is
+///   inbox — nothing to locate, nothing to load, nothing to fetch. A bundled
+///   engine needs a model directory, a first-run download and cache-integrity
+///   check (mirroring the 385 MB TTS model's path in `lib.rs`), and a resident
+///   session whose load cost is paid once. The precedent for that in this
+///   codebase is `SupertonicEngine::spawn` — the `ort` session lives on its own
+///   named thread behind a `Mutex<Sender<Job>>`, which is how an ONNX-backed
+///   type satisfies `OcrEngine: Send + Sync` at all. **Expect
+///   `spawn(model_dir) -> Result<Self>`, not `new()`, and expect it to live in
+///   a platform-neutral `src/ocr/onnx.rs` rather than here.**
+/// * **It replaces this type, it does not sit beside it.** Two engines would
+///   mean two confidence semantics and two failure modes, plus a selection
+///   problem *between engines* on top of the one between models. Replacing is
+///   also the only thing that makes hard constraint 1 literally true on Windows.
+/// * `oar-ocr` (the ready-made Rust PP-OCR crate) **cannot be added** — it pins
+///   `ort =2.0.0-rc.13` against this crate's `ort =2.0.0-rc.7`, which is a hard
+///   Cargo resolution failure, not a duplicate-crate warning. Use it as a
+///   reference implementation only. Do not bump the `ort` pin for OCR.
 ///
 /// # Small regions are the failure case, and they are Aloud's primary gesture
 ///
