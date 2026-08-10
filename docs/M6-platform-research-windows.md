@@ -932,7 +932,7 @@ takes its real damage.
 
 1. **Delete the macOS permission model from the Windows plan.** No TCC analogue exists for capture.
    No preflight, no restart-after-grant, no grant-invalidated-by-rebuild. Do not port that code, and
-   do not let a `#[cfg]` for it leak into pipeline logic (hard constraint 7).
+   do not let a `#[cfg]` for it leak into pipeline logic (hard constraint 8).
 2. **Use the Win32 interop factory (`CreateForMonitor` / `CreateForWindow`) if using WGC at all —
    never `GraphicsCapturePicker`, never `TryCreateFromDisplayId`/`WindowId`.** The latter two require
    package identity and will hard-fail unpackaged.

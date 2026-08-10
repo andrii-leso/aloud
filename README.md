@@ -94,6 +94,13 @@ Both apply to the running engine immediately, no relaunch needed. The
 would exceed 30 seconds of audio and false-positive the player's stall
 watchdog.
 
+Speed is applied *after* synthesis, by `src/tts/timestretch.rs`, not by
+Supertonic's own `speed` argument — that argument shrinks the canvas the
+decoder renders into, and above ~1.1× it silently drops words
+(2026-08-10; `docs/2026-08-10-text-drop-diagnosis.md`). The engine is
+always driven at 1.0. The retiming preserves pitch, so a faster male
+voice stays a male voice.
+
 Settings persist at
 `~/Library/Application Support/com.andriileso.aloud/settings.json` —
 inspect or delete that file to reset to defaults.

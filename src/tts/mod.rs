@@ -1,4 +1,5 @@
 pub mod supertonic_engine;
+pub mod timestretch;
 
 /// A block of synthesised mono audio.
 #[derive(Debug, Clone)]
