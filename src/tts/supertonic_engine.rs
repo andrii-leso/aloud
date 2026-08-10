@@ -1,3 +1,4 @@
+use super::timestretch::time_stretch;
 use super::{Pcm, TtsEngine};
 use crate::vendor::supertonic::{load_text_to_speech, load_voice_style, Style, TextToSpeech};
 use crate::{onnx_dir, voice_style_path};
@@ -7,6 +8,20 @@ use std::sync::Mutex;
 
 const TOTAL_STEP: usize = 8;
 const SILENCE_DURATION: f32 = 0.3;
+
+/// The only speed Supertonic is ever asked for.
+///
+/// Its `speed` argument is not a playback control — it divides the duration
+/// predictor's output and sizes the decoder's latent from the result, so any
+/// value above ~1.1 hands the decoder less room than it asked for and it drops
+/// phonemes, and then words, without raising anything. Andrii lost
+/// `on screen; Aloud` out of the middle of a sentence this way at 1.5x
+/// (2026-08-10). Speed is applied to the rendered audio instead, by
+/// `super::timestretch` — see that module and
+/// `docs/2026-08-10-text-drop-diagnosis.md`.
+///
+/// Do not plumb a caller's speed through to `TextToSpeech::call`.
+const ENGINE_SPEED: f32 = 1.0;
 
 struct Job {
     text: String,
@@ -62,13 +77,19 @@ impl SupertonicEngine {
                             &job.lang,
                             &style,
                             TOTAL_STEP,
-                            job.speed,
+                            ENGINE_SPEED,
                             SILENCE_DURATION,
                         )
-                        .map(|(samples, duration_s)| Pcm {
-                            samples,
-                            sample_rate: rate,
-                            duration_s,
+                        .map(|(samples, _duration_s)| {
+                            let samples = time_stretch(&samples, rate, job.speed);
+                            Pcm {
+                                // The engine's reported duration describes the
+                                // 1.0 rendering, so it is recomputed from what
+                                // is actually being handed to the sink.
+                                duration_s: samples.len() as f32 / rate as f32,
+                                samples,
+                                sample_rate: rate,
+                            }
                         });
                     let _ = job.reply.send(result);
                 }

@@ -60,7 +60,7 @@ If a change touched anything under `dist/` (the settings window), `cargo` will n
 notice a **new** file there and `generate_context!()` cannot track a file that didn't
 exist at the previous compile — the rebuild above will silently embed a stale binary.
 Run `cargo clean -p aloud --release` first in that case (see `CLAUDE.md` hard
-constraint 10).
+constraint 11).
 
 ## Launch-at-login is a spike, not a task
 

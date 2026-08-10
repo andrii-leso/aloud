@@ -11,8 +11,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// If `queued()` reports the same depth for this long with no stop
 /// requested, the audio device is presumed stalled (see `wait_for_drain`).
-/// Chunks are capped at ~120 chars (~8s of audio at normal speed), so 30s
-/// of zero progress cannot be legitimate playback.
+/// Only the *first* chunk is capped at ~120 chars; every later one is capped
+/// at `LATER_CHUNK_CHARS` = 300 (`src/text/chunk.rs`), which is roughly 20s
+/// of audio at speed 1.0 — so the margin here is thinner than the old ~8s
+/// figure implied. At the 0.7 speed floor a 300-char chunk runs ~28s against
+/// this 30s timeout. That is pre-existing and unchanged by the 2026-08-10
+/// speed fix (0.7 produced an equally long buffer before it), but it is only
+/// 1-4s of headroom on a content-dependent estimate: do not raise
+/// `LATER_CHUNK_CHARS` or lower the speed floor without revisiting this.
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Player {

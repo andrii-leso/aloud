@@ -40,9 +40,12 @@ The design spec's "~1.5s to first word" comes from a near-idle measurement and h
 
 `speed` must stay clamped to 0.7–2.0 (the CLI does this): chunks cap at 120 chars, and below ~0.27x one chunk exceeds 30s of audio and false-positives the player's stall watchdog.
 
+**CORRECTED, 2026-08-10 — that clamp was never the real hazard, and the upper half of the range was actively broken.** Supertonic's `speed` is not a playback control: `_infer` does `duration /= speed` and the result sizes the decoder's latent, so any value above ~1.1x hands the decoder less room than its own duration predictor asked for and it silently elides phonemes, then whole words. Measured across six texts: at 1.5x, four of six lost content; at 2.0x, all six did; short utterances degrade first (a two-word heading breaks at 1.25x). Aloud now always synthesises at 1.0 and retimes the rendered audio in `src/tts/timestretch.rs`. Evidence and method: [`2026-08-10-text-drop-diagnosis.md`](2026-08-10-text-drop-diagnosis.md).
+
 ## Deferred minors (none blocking)
 
 - Digit-only paragraph blocks are stripped as page numbers, so a standalone year or an OCR'd numeric table column is dropped when it sits between blank lines. Judged an acceptable trade — page numbers are common in target input, standalone numeric paragraphs are not. Single-block input is exempt, so a bare-number selection still speaks.
+- An OCR'd heading gets welded onto the paragraph below it. Vision separates a heading from the following line with a single `\n`, and `normalize_ocr`'s soft-break rule turns any single newline into a space, so `Read Region` + hint becomes one run-on utterance with no pause between them. Cosmetic (prosody, not content) and explicitly *not* the cause of the 2026-08-10 word-drop, which was the speed knob — but a real defect, and the fix is a heading heuristic in the normalizer rather than anything in the chunker.
 - A sentence terminator followed by a closing quote is not treated as a boundary, so `He said "Stop." Then left.` stays one chunk. Harmless (still under the 120-char cap); revisit if reading selected prose from articles becomes primary.
 - The long-Cyrillic chunker test infers the comma-preference path from tracing rather than asserting `ends_with(',')`.
 - Stop-test timing margins are generous rather than handshake-synchronised; no flake observed.
