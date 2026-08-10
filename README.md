@@ -257,3 +257,9 @@ the Service callback firing, and every error — is also logged to
   out of it, Stop from the tray, or resume and let it finish.
   `Cmd+Shift+A` is different: it carries the selection, so a second press
   is a pause or a new read rather than nothing (see the table above).
+- **Reading a selection made inside the Settings window hides that
+  window.** macOS activates Aloud whenever it delivers a selection to
+  the Service, so Aloud hands activation straight back — otherwise every
+  ⌘⇧A would pull focus off whatever you were reading. It gives focus
+  back by hiding itself, which also hides the Settings window if it
+  happened to be open. Reopen it from the menu bar; nothing is lost.
