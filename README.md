@@ -90,9 +90,12 @@ described above) can be changed.
 **Voice and speed.** Pick between the two shipped voices, **F5** (female,
 default) and **M5** (male), and adjust speed from **0.7×** to **2.0×**.
 Both apply to the running engine immediately, no relaunch needed. The
-0.7× floor exists because below roughly 0.27× a single chunk of speech
-would exceed 30 seconds of audio and false-positive the player's stall
-watchdog.
+0.7× floor exists because below it a single chunk of speech would exceed
+30 seconds of audio and false-positive the player's stall watchdog. That
+threshold is around **0.65-0.67×**, not the ~0.27× stated here
+previously: 0.27 was computed from a 120-char chunk cap that now applies
+only to the first chunk, while later chunks are capped at 300 characters
+(~18-20 s at 1.0×). So the floor has 1-4 s of margin, not 30.
 
 Speed is applied *after* synthesis, by `src/tts/timestretch.rs`, not by
 Supertonic's own `speed` argument — that argument shrinks the canvas the

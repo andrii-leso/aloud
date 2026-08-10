@@ -141,6 +141,22 @@ utterance needs to be; dividing by 1.5 hands the decoder 66 % of that. It does
 not speak faster — it runs out of canvas and leaves phonemes, then whole words,
 out. Silently: there is no error path for "did not fit".
 
+**The same shortened duration cuts a second time, further down.** Review of the
+vendored source found a cut this section originally missed —
+`TextToSpeech::call`, lines 731-732:
+
+```rust
+let dur = duration[0];
+let wav_len = (self.sample_rate as f32 * dur) as usize;
+let wav_chunk = &wav[..wav_len.min(wav.len())];
+```
+
+`duration` here is the already-divided value, so beyond sizing the latent it
+also hard-truncates the rendered waveform to `sample_rate × dur`. Two
+independent speed-scaled cuts, not one. It does not change the fix — both are
+driven by the same argument, and both stop mattering once the engine is only
+ever called at 1.0 — but the mechanism is worse than "the decoder elides".
+
 ## 7. Other inputs are affected — this was never about one sentence
 
 Six texts, word recall against the reference (before the fix):
@@ -185,7 +201,11 @@ stops doing that, and moves speed to where it belongs — the rendered audio.
   the requested factor using SOLA (synchronised overlap-add): the waveform is
   copied out in overlapping segments, advancing through input and output at
   different rates, and each splice slides ±10 ms to wherever it best correlates
-  with what has already been written.
+  with what has already been written. The correlation window is 20 ms, chosen to
+  exceed one pitch period of M5 (male, ~100-120 Hz, an 8-10 ms period); the 8 ms
+  first written was *inside* that period, the textbook condition for SOLA to
+  lock onto a sub-period feature and warble at the splice rate on the very voice
+  Andrii uses.
 
 Aligning splices to the waveform's own periodicity is what preserves pitch.
 Plain resampling would have been three lines and is what the control in §5 used,
@@ -204,12 +224,43 @@ of magnitude slower. The chunker is untouched and the latency ratio guard
 ## 9. Verification
 
 `tests/speed_preserves_words.rs` is the regression test, written before the fix
-and watched to fail. It carries the owner's exact sentence as a fixture and
-transcribes rendered audio, because there is no cheaper honest oracle for "was
-this word actually spoken". Its invariant is deliberately relative — speed 1.0
-is the reference, and a faster rendering of the same text may not contain less —
-so the transcriber's own quirks cancel out. It skips loudly if the local Whisper
-install is absent rather than passing vacuously.
+and watched to fail. It carries the owner's exact sentence as a fixture plus a
+second unrelated sentence, and transcribes rendered audio, because there is no
+cheaper honest oracle for "was this word actually spoken". Its invariant is
+deliberately relative — speed 1.0 is the reference, and a faster rendering of
+the same text may not contain less — so the transcriber's own quirks largely
+cancel out. It skips loudly if the local Whisper install is absent rather than
+passing vacuously.
+
+Two things about it are calibration, not slack, and both were measured:
+
+- **It allows a small token budget** (2 words at 1.5×, 3 at 2.0×) instead of
+  demanding exact equality. Whisper substitutes about one word per utterance
+  regardless of length — "Aloud" as "allowed"/"allow", "brown" as "round", and
+  in one run "dog" as "door" *in the 1.0 reference itself* — and occasionally
+  two adjacent words together. Those are substitutions, same token count and
+  slot, not the deletions this test exists to catch. Calibrated over seven
+  consecutive runs, then confirmed still to catch the bug: re-plumbing `speed`
+  into the engine fails it at 3 lost words against a budget of 2.
+- **It does not assert sub-second utterances**, though §7 identifies them as the
+  worst case, because it cannot: Whisper rendered a *clean* 1.5× "Read Region"
+  as "Read Readin" on one run in three. That would flake, and a flaky guard gets
+  loosened by the next person. Short-utterance behaviour is covered instead by
+  the oracle-free unit tests in §10.
+
+It is `#[ignore]`d. Each case is an ONNX synthesis plus a Whisper run, and in a
+plain `cargo test --release` that load lands on `tests/latency_budget.rs`, whose
+ratio guard enforces hard constraint 5 and has already been observed at 0.82
+against its own 0.70 gate under concurrency. Rather than put pressure on a
+load-bearing guard, the expensive check is opt-in:
+
+```
+cargo test --release --test speed_preserves_words -- --ignored --nocapture
+```
+
+The mechanism itself keeps fast, deterministic, always-on coverage in
+`src/tts/timestretch.rs`: retiming ratio at both extremes, pitch preservation at
+a male fundamental, the tail flush, and a final-burst check.
 
 Before:
 
@@ -239,17 +290,80 @@ Word recall across the same six texts, before → after:
 | long paragraph | 28→28/28 | 28→28/28 | 24→**28**/28 | 12→**28**/28 |
 | plain sentence | 11→11/11 | 11→11/11 | 11→11/11 | 5→**11**/11 |
 
-Full suite: **139 passed, 0 failed, 1 ignored** (the pre-existing `#[ignore]`d
-absolute-latency check). `cargo fmt --check` clean; the new module is
+Full suite: **140 passed, 0 failed, 2 ignored** — the 2 ignored being the
+pre-existing absolute-latency check and this document's own ASR test, which is
+opt-in for the reason above and was run separately (7 consecutive passes). `cargo fmt --check` clean; the new module is
 clippy-clean.
 
-## 10. Follow-ups, not done here
+## 10. A second defect in the fix itself: the stretch dropped every tail
 
-- At 2.0× the two shortest texts still lose a little to the transcriber
-  (`re-region`, `round fox`). The words are being spoken; Whisper struggles with
-  heavily compressed short clips. Worth a listen before treating it as a defect.
+Review caught this before merge, and it was the same failure this document
+exists to eliminate, two orders of magnitude smaller.
+
+The SOLA loop can only splice while a whole block remains ahead of the read
+position, so it stopped with up to one analysis hop of input never emitted —
+~70 ms at 1.5×, ~90 ms at 2.0×, ~38 ms at 0.7×. Aloud synthesises one chunk per
+sentence, so that is the end of *every sentence*, and a sentence closing on a
+short plosive ("…inside it.") loses its final consonant. It would have shipped
+as the fix for silent word loss.
+
+Fixed by flushing the remainder after the loop. Because every splice ends in a
+verbatim copy, `out` ends exactly on the last input sample consumed, so the
+remainder is a seamless continuation and is appended as-is — no splice, no
+crossfade, no artifact possible. The cost is that the final few tens of
+milliseconds play at 1.0 rather than at `speed`; the same is already true of the
+first block. Both are fixed, length-independent.
+
+Pinned by two deterministic tests that need no transcriber:
+`the_end_of_the_input_is_never_clipped` (the output must end on the input's
+final samples, at 0.7/1.25/1.5/2.0) and `a_final_burst_is_not_swallowed`.
+
+## 11. The residual 2.0× losses are the transcriber — now measured, not asserted
+
+This section previously attributed the leftover 2.0× word errors to Whisper on
+the strength of nothing but plausibility. The tail-flush bug above was a
+competing in-code explanation sized at *exactly* 90 ms at 2.0×, so it had to be
+settled properly.
+
+**Re-measured after the tail fix: the 2.0× numbers did not move at all.**
+`heading` stayed 0/2 ("re-region" → "Reregion."), `short` stayed 8/9 ("round
+fox"). So the tail flush was a real bug, but not this one.
+
+The discriminating experiment is a control that *cannot* lose content: take one
+1.0 rendering and retime it two ways — SOLA, and plain linear resampling, which
+only interpolates the same waveform and has no splices at all. Any word a
+resampler "loses" was lost by the transcriber, by construction.
+
+| input | SOLA 2.0× | resample 2.0× (lossless control) |
+|---|---|---|
+| owner's sentence | *verbatim* | Try to rectangle anyone on screen, allow to read the text inside it. |
+| quick brown fox | The quick round fox jumps over lazy dog. | A quick damn fox jumps at a lady dog. |
+| `Read Region` | Re-readin | We lead him. |
+
+The provably-lossless method scores **worse than the shipped path at every
+point**. The audio is intact; Whisper `base` is the limit on heavily compressed
+speech. The "leading-consonant loss" reading of "brown" → "round" does not
+survive either — the resampler preserves every leading consonant by
+construction and still produced "damn fox".
+
+This also bounds what the regression test can honestly assert, and is why it
+uses a token budget rather than exact equality: see §9.
+
+## 12. Follow-ups, not done here
+
+- **A/B listen at 0.7× on M5**, engine-native versus stretched. Everything
+  measured here is at 1.0 or above. Below 1.0 the mechanism is provably benign
+  (`duration /= 0.7` gives the decoder *more* canvas), so pinning the engine to
+  1.0 across the whole range is a uniformity choice — one code path — not an
+  evidenced one. Recorded as such in `CLAUDE.md` constraint 6.
 - The normalizer welds an OCR heading onto the paragraph beneath it, because
   Vision separates them with a single `\n` and the soft-break rule turns any
   single newline into a space — hence `Read Region Drag a rectangle …` as one
   run-on utterance with no pause. It did not cause this bug and is not fixed
   here. It is a real prosody defect and deserves its own change.
+- The stall-watchdog margin is thinner than the code comments claimed:
+  `LATER_CHUNK_CHARS` is 300 (~18-20 s at 1.0), so the 0.7 speed floor leaves
+  1-4 s against a 30 s timeout, not the ~30 s the old ~0.27× figure implied.
+  Pre-existing and unchanged by this fix — 0.7 produced an equally long buffer
+  before it — but the comments in `player.rs`, `aloud_say.rs` and `README.md`
+  now say so.
