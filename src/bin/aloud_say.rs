@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// rather than passed through.
 ///
 /// The binding cap is `LATER_CHUNK_CHARS` = 300 (`src/text/chunk.rs`), not the
-/// 120 of the first chunk: 300 chars is roughly 18-20s at speed 1.0, so the
+/// 120 of the first chunk: 300 chars is roughly 20s at speed 1.0, so the
 /// watchdog is reached around 0.65-0.67 and this 0.7 floor leaves only 1-4s of
 /// margin on a content-dependent estimate. (An older comment here put the
 /// floor at ~0.27, which was computed from the 120-char cap before later

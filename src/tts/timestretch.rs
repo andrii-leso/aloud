@@ -202,13 +202,19 @@ mod tests {
         assert_eq!(time_stretch(&x, SR, 1.0), x);
     }
 
-    /// Clips are 4 s because the head and tail are each emitted verbatim at 1.0
-    /// (see `time_stretch`), which biases the ratio by a fixed number of
-    /// samples — tens of milliseconds — regardless of length. On a 4 s clip
-    /// that is well inside the tolerance; on a 0.2 s clip it would not be, and
-    /// the tolerance would have to be loosened to hide it rather than the test
-    /// being honest about what it measures.
-    const RATIO_CLIP_S: f32 = 4.0;
+    /// Clips are long because the head and tail are each emitted verbatim at
+    /// 1.0 (see `time_stretch`), which biases the ratio by a fixed number of
+    /// samples — tens of milliseconds — regardless of clip length. The bias is
+    /// absolute, so the only way to keep it small *relative* to the tolerance
+    /// is a long clip.
+    ///
+    /// 4 s is not enough, which was measured rather than guessed: at the 2.0
+    /// extreme it lands at 0.0488 against the 0.05 tolerance — 98% of budget,
+    /// where one splice more or fewer moves the ratio by 0.0388. Any
+    /// float-rounding difference in the `nominal` accumulation on another
+    /// target would flip it red, and the Windows build is coming. At 8 s the
+    /// same case errs 0.0149.
+    const RATIO_CLIP_S: f32 = 8.0;
 
     #[test]
     fn faster_speed_shortens_by_that_factor() {

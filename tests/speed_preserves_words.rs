@@ -191,9 +191,18 @@ fn raising_the_speed_does_not_drop_words() {
             &format!("{label}__reference_1p0"),
             &engine.synthesize(text, "en", 1.0).expect("1.0"),
         );
+        // Per-case, not a flat floor. A flat `!is_empty()` would be satisfied by
+        // a one-word reference, and the budget check below is then satisfied
+        // unconditionally — the test would pass silently in exactly the case it
+        // should scream about: the 1.0 reference render itself being broken.
+        let expected_tokens = text.split_whitespace().count();
+        let reference_floor = expected_tokens.saturating_sub(*max_missing);
         assert!(
-            !reference.is_empty(),
-            "{label}: reference rendering at speed 1.0 is itself degenerate"
+            reference.len() >= reference_floor,
+            "{label}: reference rendering at speed 1.0 is itself degenerate — \
+             {} tokens, expected at least {reference_floor} for a {expected_tokens}-word \
+             input: {reference:?}",
+            reference.len()
         );
 
         for trial in 0..*trials {

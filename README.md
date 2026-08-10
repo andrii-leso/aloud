@@ -95,7 +95,7 @@ Both apply to the running engine immediately, no relaunch needed. The
 threshold is around **0.65-0.67×**, not the ~0.27× stated here
 previously: 0.27 was computed from a 120-char chunk cap that now applies
 only to the first chunk, while later chunks are capped at 300 characters
-(~18-20 s at 1.0×). So the floor has 1-4 s of margin, not 30.
+(~20 s at 1.0×). So the floor has 1-4 s of margin, not 30.
 
 Speed is applied *after* synthesis, by `src/tts/timestretch.rs`, not by
 Supertonic's own `speed` argument — that argument shrinks the canvas the

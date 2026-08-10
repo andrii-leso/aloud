@@ -318,36 +318,60 @@ Pinned by two deterministic tests that need no transcriber:
 `the_end_of_the_input_is_never_clipped` (the output must end on the input's
 final samples, at 0.7/1.25/1.5/2.0) and `a_final_burst_is_not_swallowed`.
 
-## 11. The residual 2.0× losses are the transcriber — now measured, not asserted
+## 11. What the residual 2.0× losses actually are
 
 This section previously attributed the leftover 2.0× word errors to Whisper on
-the strength of nothing but plausibility. The tail-flush bug above was a
-competing in-code explanation sized at *exactly* 90 ms at 2.0×, so it had to be
-settled properly.
+the strength of nothing but plausibility. Two things were needed to fix that,
+and a third correction came out of re-review.
 
-**Re-measured after the tail fix: the 2.0× numbers did not move at all.**
-`heading` stayed 0/2 ("re-region" → "Reregion."), `short` stayed 8/9 ("round
-fox"). So the tail flush was a real bug, but not this one.
+**The falsification, which is the load-bearing evidence.** The tail-flush bug in
+§10 was the *only* in-code mechanism sized to explain the residual — ~90 ms at
+2.0×, against exactly the kind of word-edge damage being seen. Eliminating it
+moved the 2.0× numbers **not at all**: `heading` stayed 0/2 ("re-region" →
+"Reregion."), `short` stayed 8/9 ("round fox"). A candidate cause was removed and
+the effect did not change, so that candidate was not the cause.
 
-The discriminating experiment is a control that *cannot* lose content: take one
-1.0 rendering and retime it two ways — SOLA, and plain linear resampling, which
-only interpolates the same waveform and has no splices at all. Any word a
-resampler "loses" was lost by the transcriber, by construction.
+**A supporting existence proof, and its limits.** Take one 1.0 rendering and
+retime it two ways — SOLA, and plain linear resampling, which only interpolates
+the same waveform and has no splices:
 
-| input | SOLA 2.0× | resample 2.0× (lossless control) |
+| input | SOLA 2.0× | resample 2.0× |
 |---|---|---|
 | owner's sentence | *verbatim* | Try to rectangle anyone on screen, allow to read the text inside it. |
 | quick brown fox | The quick round fox jumps over lazy dog. | A quick damn fox jumps at a lady dog. |
 | `Read Region` | Re-readin | We lead him. |
 
-The provably-lossless method scores **worse than the shipped path at every
-point**. The audio is intact; Whisper `base` is the limit on heavily compressed
-speech. The "leading-consonant loss" reading of "brown" → "round" does not
-survive either — the resampler preserves every leading consonant by
-construction and still produced "damn fox".
+This is **not a matched control**, and the first version of this section leaned
+on it too hard. Linear resampling at 2× with no anti-alias filter aliases
+everything above SR/4 and shifts pitch by an octave, so "the resampler scored
+worse" is over-determined — it degrades for reasons of its own. What it *does*
+establish, validly, is an existence proof: Whisper produces this exact error
+class on audio where provably nothing was deleted. That is enough to retire the
+inference "Whisper misses ⇒ missing audio", which is all it is used for here.
+It also disposes of the "leading-consonant loss" reading of "brown" → "round":
+a resampler preserves every leading consonant by construction and still produced
+"damn fox".
+
+**And a correction in the other direction: "no content can be lost" is a
+property of the resampler, not of SOLA.** At 2.0× the shipped path structurally
+**skips 24.3 % of the input** (longest unread run 37.5 ms; 3.0 % and ~17 ms at
+1.5×). That is not a defect and not fixable within SOLA — it is what 2:1 time
+compression *is*, and it falls straight out of the geometry: each splice reads
+`block` samples and then hops `segment × speed`, so at 2.0× the hop exceeds the
+block by `3528 − 2646 = 882` samples, a nominal 25 % never read, which search
+jitter moves to the measured 24.3 %. At 1.5× hop and block are equal and only
+jitter strands anything, hence 3 %.
+
+So the honest statement is narrower than "it's all Whisper": at 1.5× — the
+owner's setting — essentially nothing is skipped and content is intact, which
+the recall table in §9 shows directly. At 2.0× a quarter of the waveform is
+genuinely not rendered, and that, rather than the transcriber alone, is why
+2.0× intelligibility is lower. What the evidence rules out is the thing that
+mattered: silent deletion of *words* the way the engine's own speed knob did it.
 
 This also bounds what the regression test can honestly assert, and is why it
-uses a token budget rather than exact equality: see §9.
+uses a token budget rather than exact equality, and a looser one at 2.0×: see
+§9.
 
 ## 12. Follow-ups, not done here
 
@@ -361,8 +385,16 @@ uses a token budget rather than exact equality: see §9.
   single newline into a space — hence `Read Region Drag a rectangle …` as one
   run-on utterance with no pause. It did not cause this bug and is not fixed
   here. It is a real prosody defect and deserves its own change.
+- **A deterministic short-utterance test**, asserting the rendered length of a
+  sub-second clip is the 1.0 length divided by the speed. Sub-second inputs are
+  the worst case per §7 but cannot be checked through a transcriber (§9); a
+  length property needs no oracle and would close that gap. Deliberately not
+  built in this round.
+- **An `#[ignore]`d broken-mode variant** of `tests/speed_preserves_words.rs`,
+  re-plumbing `speed` into the engine behind an env var, so the "watched it
+  fail" step is reproducible rather than a manual edit each time.
 - The stall-watchdog margin is thinner than the code comments claimed:
-  `LATER_CHUNK_CHARS` is 300 (~18-20 s at 1.0), so the 0.7 speed floor leaves
+  `LATER_CHUNK_CHARS` is 300 (~20 s at 1.0), so the 0.7 speed floor leaves
   1-4 s against a 30 s timeout, not the ~30 s the old ~0.27× figure implied.
   Pre-existing and unchanged by this fix — 0.7 produced an equally long buffer
   before it — but the comments in `player.rs`, `aloud_say.rs` and `README.md`
