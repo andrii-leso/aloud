@@ -58,6 +58,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "unicode-normalization",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -72,6 +72,39 @@ objc2-service-management = { version = "0.3.2", default-features = false, featur
     "SMAppService",
 ] }
 
+# Win32 + WinRT bindings for the M6 Windows arms: the region overlay
+# (CreateWindowExW / WndProc / GDI), BitBlt capture, and Windows.Media.Ocr.
+#
+# Version is matched to TAURI's copy, not to the newest release. Cargo.lock
+# already carries two `windows` majors: 0.61.3 (tauri 2.11.5 -> tao 0.35.3,
+# wry 0.55.1, webview2-com 0.38.2, tauri-runtime) and 0.62.2 (rodio 0.22.2
+# -> cpal 0.17.3). Asking for "0.61" unifies with the first instead of
+# adding a third copy, and keeps HWND/HMONITOR the same newtype as the one
+# tao hands out — Aloud crosses the Tauri seam (window handles, DPI) and
+# never crosses cpal's. `global-hotkey 0.8.0` does not constrain this: it
+# depends on `windows-sys 0.59`, a different crate.
+#
+# Features are the verified capture+OCR subset plus the two the overlay
+# needs (GetDpiForMonitor; SetCapture/ReleaseCapture). All thirteen were
+# checked against windows 0.61.3's own [features] table. Add more as the
+# compiler asks — a missing one surfaces as a plain unresolved import.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Foundation",
+    "Graphics",
+    "Graphics_Imaging",
+    "Media",
+    "Media_Ocr",
+    "Globalization",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
 [dev-dependencies]
 # Adds `tauri::test` (MockRuntime + `get_ipc_response`) on top of the
 # `[dependencies]` tauri above via Cargo feature unification — dev-only,
