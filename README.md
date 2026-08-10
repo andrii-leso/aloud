@@ -247,11 +247,13 @@ the Service callback firing, and every error — is also logged to
   property of how busy the machine is at that moment.
 - **The Supertonic model must already exist at `~/.cache/supertonic3`**
   (or `$ALOUD_MODEL_DIR`, if set) — there is no first-run download yet.
-- **The region hotkey is silently ignored while a read is already
-  speaking.** A second `Cmd+Shift+R` that lands while one is in flight is
-  dropped with no notification, the same as a deliberate cancel — the
-  region hotkey carries no text, so Aloud cannot tell a deliberate
-  re-trigger from a stray double-press, and interrupting on a stray press
-  would be worse. `Cmd+Shift+A` is different: it carries the selection, so
-  a second press is a pause or a new read rather than nothing (see the
-  table above).
+- **The region hotkey is silently ignored while another read is in
+  flight — including a paused one.** A second `Cmd+Shift+R` that lands
+  while a read is under way is dropped with no notification, the same as a
+  deliberate cancel, and a *paused* read is still a read in flight (a
+  state `Cmd+Shift+A` makes easy to reach). The region hotkey carries no
+  text, so Aloud cannot tell a deliberate re-trigger from a stray
+  double-press, and interrupting on a stray press would be worse. To get
+  out of it, Stop from the tray, or resume and let it finish.
+  `Cmd+Shift+A` is different: it carries the selection, so a second press
+  is a pause or a new read rather than nothing (see the table above).

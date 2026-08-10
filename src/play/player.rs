@@ -71,11 +71,52 @@ impl StallWatch {
     }
 }
 
+/// How a `speak()` call ended.
+///
+/// `Ok(())` used to cover both, and a stopped read is genuinely not an
+/// error — the caller asked for it. But it is also not a *completed* read,
+/// and collapsing the two meant a passage displaced by a ⌘⇧A takeover
+/// reported itself as having finished: `src/bin/aloud.rs` logged
+/// "completed, spoke" and reset the tray status while its replacement was
+/// already speaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeakEnd {
+    /// Every sentence was synthesised and handed to the sink.
+    Completed,
+    /// A `stop()` landed and the read unwound early.
+    Interrupted,
+}
+
 pub struct Player {
     engine: Arc<dyn TtsEngine>,
     sink: Arc<dyn AudioSink>,
     stop_flag: Arc<AtomicBool>,
     speaking: Arc<AtomicBool>,
+    /// True once a buffer from the utterance in flight has actually
+    /// reached the sink, and false again the moment that queue is dropped.
+    ///
+    /// `speaking` alone cannot answer "is there audio here to pause?".
+    /// `speak()` sets it *before* the first `engine.synthesize()` call,
+    /// which is ~1.5s idle and ~15s on a loaded machine (CLAUDE.md
+    /// constraint 5), so for the whole silent pre-roll `is_speaking()`
+    /// reports true while the sink is still empty — which is exactly the
+    /// paused-and-empty state `pause()`'s guard exists to make
+    /// unrepresentable. It is also still true for the seconds between a
+    /// `stop()` and the speaking thread noticing it, i.e. against a sink
+    /// that has already been emptied.
+    ///
+    /// Before ⌘⇧A became a toggle, a press in either window was a
+    /// harmless no-op. Now it is an accepted pause, which parks the read
+    /// indefinitely — the first buffer lands in a paused sink,
+    /// `wait_for_drain` sits on a frozen depth, and `StallWatch`
+    /// deliberately never fires while paused. This flag is the missing
+    /// half of the predicate.
+    ///
+    /// Deliberately not `sink.queued() > 0`: synthesis runs *behind*
+    /// playback on a loaded machine, so an ordinary mid-read moment can
+    /// legitimately show a depth of zero while the next sentence is being
+    /// synthesised, and gating on the depth would refuse real pauses.
+    audible: Arc<AtomicBool>,
 }
 
 impl Player {
@@ -85,6 +126,7 @@ impl Player {
             sink,
             stop_flag: Arc::new(AtomicBool::new(false)),
             speaking: Arc::new(AtomicBool::new(false)),
+            audible: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -106,7 +148,15 @@ impl Player {
         // Also clears the paused state — see the `AudioSink::stop`
         // contract. Stop-while-paused must not leave a sink that
         // swallows the next utterance.
+        self.halt();
+    }
+
+    /// Drops the queue and records that there is no longer any audio a
+    /// pause could hold. Every stop path goes through here rather than
+    /// calling `sink.stop()` directly, so the two can never disagree.
+    fn halt(&self) {
         self.sink.stop();
+        self.audible.store(false, Ordering::SeqCst);
     }
 
     /// Whether audio output is currently halted mid-utterance.
@@ -122,16 +172,25 @@ impl Player {
 
     /// Halts output, keeping every already-synthesised buffer.
     ///
-    /// **No-op unless something is speaking.** Pausing an idle sink would
-    /// park a paused-and-empty audio device that silently eats the next
-    /// read — the tray item and the hotkey are both reachable at any
-    /// time, so this has to be refused here rather than assumed away.
+    /// **No-op unless something is speaking *and* audio has actually
+    /// reached the sink.** Pausing an empty sink parks a paused-and-empty
+    /// audio device that silently eats whatever is appended next, with a
+    /// queue depth that never moves and a stall watchdog that (correctly)
+    /// refuses to fire while paused — the read then hangs forever, still
+    /// holding `App`'s busy flag.
+    ///
+    /// Both halves of the predicate are load-bearing. `is_speaking()`
+    /// alone is true through the whole silent pre-roll before the first
+    /// `engine.synthesize()` returns, and true again in the gap between a
+    /// `stop()` and the speaking thread unwinding — both of which are
+    /// seconds on a loaded machine, and both of which are exactly the
+    /// empty-sink case. See the `audible` field.
     ///
     /// Like `stop()`, this takes effect even while the speaking thread is
     /// blocked inside `engine.synthesize()`: it acts on the sink, not on
     /// the loop. Returns the resulting paused state.
     pub fn pause(&self) -> bool {
-        if !self.is_speaking() {
+        if !self.is_speaking() || !self.audible.load(Ordering::SeqCst) {
             return false;
         }
         self.sink.pause();
@@ -153,13 +212,16 @@ impl Player {
     /// calls would interleave `sink.append()` calls and race on the shared
     /// `speaking`/`stop_flag` state; callers must serialize their own calls
     /// rather than relying on internal locking here.
-    pub fn speak(&self, text: &str, lang: &str, speed: f32) -> Result<()> {
+    pub fn speak(&self, text: &str, lang: &str, speed: f32) -> Result<SpeakEnd> {
         let sentences = split_sentences(text);
         if sentences.is_empty() {
-            return Ok(());
+            return Ok(SpeakEnd::Completed);
         }
 
         self.stop_flag.store(false, Ordering::SeqCst);
+        // Nothing of this utterance has been heard yet, whatever the
+        // previous one left behind.
+        self.audible.store(false, Ordering::SeqCst);
         // A new utterance never begins paused. `pause()` refuses when
         // nothing is speaking, but that check and the end of the previous
         // utterance can interleave: a pause landing just as `run()` drains
@@ -171,31 +233,36 @@ impl Player {
         self.speaking.store(true, Ordering::SeqCst);
         let result = self.run(&sentences, lang, speed);
         self.speaking.store(false, Ordering::SeqCst);
+        self.audible.store(false, Ordering::SeqCst);
         result
     }
 
-    fn run(&self, sentences: &[String], lang: &str, speed: f32) -> Result<()> {
+    fn run(&self, sentences: &[String], lang: &str, speed: f32) -> Result<SpeakEnd> {
         for sentence in sentences {
             if self.stopped() {
-                self.sink.stop();
-                return Ok(());
+                self.halt();
+                return Ok(SpeakEnd::Interrupted);
             }
             let pcm = self.engine.synthesize(sentence, lang, speed)?;
             if self.stopped() {
-                self.sink.stop();
-                return Ok(());
+                self.halt();
+                return Ok(SpeakEnd::Interrupted);
             }
             self.sink.append(pcm)?;
+            // Only now is there something a pause could hold on to.
+            self.audible.store(true, Ordering::SeqCst);
 
             // Keep at most one sentence buffered ahead, so stop stays
             // responsive and memory stays flat on long documents.
             if self.wait_for_drain(2)? {
-                return Ok(());
+                return Ok(SpeakEnd::Interrupted);
             }
         }
 
-        self.wait_for_drain(1)?;
-        Ok(())
+        if self.wait_for_drain(1)? {
+            return Ok(SpeakEnd::Interrupted);
+        }
+        Ok(SpeakEnd::Completed)
     }
 
     /// Blocks until `sink.queued()` drops below `threshold`, a stop is
@@ -211,7 +278,7 @@ impl Player {
 
         loop {
             if self.stopped() {
-                self.sink.stop();
+                self.halt();
                 return Ok(true);
             }
 
@@ -221,7 +288,7 @@ impl Player {
             }
 
             if watch.observe(queued, self.sink.is_paused(), Instant::now()) {
-                self.sink.stop();
+                self.halt();
                 anyhow::bail!(
                     "audio device appears stalled: queue depth stuck at {queued} for {STALL_TIMEOUT:?}"
                 );

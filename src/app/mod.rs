@@ -30,11 +30,13 @@
 //!   restart.
 //!
 //! `current` is what makes that decision possible: it names the read that
-//! holds the busy flag, and it exists for exactly as long as that read
-//! does. It is published *after* the flag is taken and cleared *before* it
-//! is released (see `BusyRelease`), so it can never name a read that has
-//! already finished — a stale value would turn the next press into a pause
-//! of silence.
+//! holds the busy flag *and is still worth toggling*. It is published
+//! after the flag is taken and cleared before it is released (see
+//! `BusyRelease`), and it is cleared again by `stop()` — because a stopped
+//! read goes on holding the busy flag for as long as it takes to unwind,
+//! which is up to one whole `engine.synthesize()` call, and during that
+//! time there is nothing left to pause. A stale value would turn the next
+//! press into a pause of silence.
 //!
 //! The busy flag covers `speak()` calls and nothing else. `stop()` and
 //! `toggle_pause()` are outside it by design: both only set atomics on
@@ -61,7 +63,7 @@ pub mod intent;
 use crate::app::intent::{comparison_key, decide_selection, Current, SelectionAction};
 use crate::capture::RegionSelector;
 use crate::ocr::OcrEngine;
-use crate::play::player::Player;
+use crate::play::player::{Player, SpeakEnd};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, RwLock};
@@ -90,9 +92,18 @@ const ACQUIRE_POLL: Duration = Duration::from_millis(5);
 /// tray from) which one happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionOutcome {
-    /// The delivered text was read. `replaced` is true when a different
-    /// read was stopped to make room for it.
+    /// The delivered text was read to the end. `replaced` is true when a
+    /// different read was stopped to make room for it.
     Spoke { replaced: bool },
+    /// The delivered text started being read but was itself cut short —
+    /// by a later ⌘⇧A takeover, or by the tray's Stop. `replaced` carries
+    /// the same meaning as on `Spoke`.
+    ///
+    /// Distinct from `Spoke` on purpose: a displaced read used to report
+    /// completion, so `src/bin/aloud.rs` logged "completed, spoke" and
+    /// reset the tray status for a passage that had been silenced, while
+    /// its replacement was already speaking.
+    Cut { replaced: bool },
     /// The same selection was already in flight, so this press toggled
     /// pause instead of starting anything. Carries the resulting paused
     /// state as `Player::pause`/`resume` report it — for logging only.
@@ -100,6 +111,12 @@ pub enum SelectionOutcome {
     /// `App::is_paused()`, so there is exactly one source of truth for
     /// what the audio device is doing.
     Toggled { paused: bool },
+    /// The delivered text had nothing speakable left in it once
+    /// normalized, so nothing was started — and, the point of the
+    /// variant, nothing in flight was stopped either. See
+    /// `actions::speakable_selection` for how a delivery the Service
+    /// accepted can still normalize to nothing.
+    Empty,
     /// Nothing happened: another selection was already in the middle of
     /// taking over, or the read being displaced never let go.
     Skipped,
@@ -171,7 +188,25 @@ impl App {
     /// needs exclusive access, and taking a plain read lock means Stop
     /// stays responsive (non-blocking against other readers) rather than
     /// queueing behind a pending voice-swap write lock.
+    ///
+    /// **Clears `current` as well**, and that is not belt-and-braces
+    /// duplication of `BusyRelease`. Stop is asynchronous: it silences the
+    /// sink at once, but the reading thread does not notice until it
+    /// leaves `engine.synthesize()` — 7-15s on a loaded machine, per
+    /// CLAUDE.md constraint 5 — and it holds the busy flag, and `current`,
+    /// for all of that time. Leaving `current` set means a ⌘⇧A on the same
+    /// passage during that window is decided as `TogglePause` and
+    /// swallowed: tray → Stop, then ⌘⇧A to start it again, does nothing at
+    /// all except flip the tray to "Resume" for a read that is already
+    /// dead. Clearing it makes the press an ordinary `Speak`, which then
+    /// simply waits for the dying read to let go of the flag.
+    ///
+    /// The ordering is safe: the read being stopped still holds `busy`, so
+    /// no other read can have published a `current` for this line to
+    /// erase — a new one is published only after `BusyRelease` has
+    /// released the flag.
     pub fn stop(&self) {
+        *lock_current(&self.current) = None;
         self.player.read().unwrap().stop();
     }
 
@@ -212,10 +247,10 @@ impl App {
     /// second call while one is already in flight is a no-op.
     ///
     /// Returns `Ok(None)` when skipped because the player was already
-    /// busy; `Ok(Some(outcome))` when it ran to completion, carrying
-    /// which of the three things happened (cancelled / found nothing /
-    /// spoke) — the caller (`src/bin/aloud.rs`) uses that to decide
-    /// whether a notification is warranted.
+    /// busy; `Ok(Some(outcome))` when it ran, carrying which of the four
+    /// things happened (cancelled / found nothing / spoke / was stopped
+    /// before the end) — the caller (`src/bin/aloud.rs`) uses that to
+    /// decide whether a notification is warranted.
     ///
     /// Unchanged by the selection toggle, deliberately: `Duration::ZERO` is a
     /// plain try-acquire, so a repeat ⌘⇧R while a read is in flight is
@@ -227,7 +262,7 @@ impl App {
         selector: &dyn RegionSelector,
         ocr: &dyn OcrEngine,
     ) -> Result<Option<actions::Outcome>> {
-        let Some(_guard) = self.acquire_within(Current::Region, Duration::ZERO) else {
+        let Some(_guard) = self.acquire_within(Current::Region, Duration::ZERO, false) else {
             return Ok(None);
         };
         let player = self.player.read().unwrap();
@@ -249,8 +284,15 @@ impl App {
     ///   asynchronous (the thread it stops may be inside
     ///   `engine.synthesize()`), so taking the flag on a plain try-acquire
     ///   would lose the race and drop the new selection on the floor
-    ///   having already silenced the old one.
+    ///   having already silenced the old one. Both the stop and the wait
+    ///   live in `acquire_within` — the stop is re-issued on every poll,
+    ///   for the reason set out there.
     /// - **Speak** is the same path with nothing to stop first.
+    ///
+    /// Nothing above is reached at all until the delivered text is known
+    /// to survive normalization: stopping a live read to make room for a
+    /// selection that then says nothing is strictly worse than the no-op
+    /// this replaced.
     ///
     /// The paused state needs no special handling on the Interrupt path,
     /// and that is load-bearing rather than lucky: `Player::stop` clears
@@ -259,6 +301,23 @@ impl App {
     /// a paused sink in front of the new one, which swallows it silently
     /// (Phase 1's discovered rodio trap).
     pub fn speak_selection(&self, text: &str) -> Result<SelectionOutcome> {
+        // Normalized **first**, before any decision and before anything is
+        // stopped. The Interrupt path silences the read in flight, and
+        // committing to that before the new text is known to be speakable
+        // trades a live passage for silence: `normalize_ocr` drops every
+        // short all-digit block once a selection has more than one
+        // paragraph, so `"42\n\n"` or `"2024\n\n2025"` is a delivery the
+        // Service accepts and the normalizer empties. Before ⌘⇧A became a
+        // toggle that press was a harmless no-op; the regression would be
+        // the silencing, reported as `Spoke { replaced: true }`.
+        let Some(normalized) = actions::speakable_selection(text) else {
+            crate::log_line!(
+                "selection flow: nothing speakable in the delivered text, \
+                 leaving whatever is playing alone"
+            );
+            return Ok(SelectionOutcome::Empty);
+        };
+
         // The lock is released before anything is acted on. Holding it
         // across `toggle_pause` would close a microsecond-wide race (the
         // read ending between the decision and the toggle) at the cost of
@@ -279,10 +338,14 @@ impl App {
         // still waiting for the previous read to let go carry the same
         // intent — the new read has not started, so there is nothing yet
         // to toggle against — and letting the second queue behind the
-        // first would read the same selection twice, back to back. Held
-        // only until the new read owns the busy flag and has published its
-        // text; from that moment a further press sees it and toggles, so
-        // this can never block the feature it protects.
+        // first would read the same selection twice, back to back.
+        //
+        // It is held until the new read owns the busy flag and has
+        // published its text, which is for as long as the read being
+        // displaced takes to notice the stop and unwind — up to one
+        // `engine.synthesize()` call. A press inside that window is
+        // dropped rather than queued, which is the trade this flag is:
+        // one lost press against reading the same passage twice.
         if self
             .taking_over
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -293,14 +356,14 @@ impl App {
         }
         let takeover = FlagRelease(&self.taking_over);
 
+        // The stop itself is issued by `acquire_within`, on every poll
+        // rather than once up front — see its doc comment.
         let replaced = matches!(action, SelectionAction::Interrupt);
-        if replaced {
-            self.stop();
-        }
 
         let Some(_guard) = self.acquire_within(
             Current::Selection(comparison_key(text).to_string()),
             TAKEOVER_WAIT,
+            replaced,
         ) else {
             crate::log_line!(
                 "selection flow: skipped, the read in flight did not release within {TAKEOVER_WAIT:?}"
@@ -313,13 +376,38 @@ impl App {
         drop(takeover);
 
         let player = self.player.read().unwrap();
-        actions::speak_selection(text, &player, self.speed())?;
-        Ok(SelectionOutcome::Spoke { replaced })
+        Ok(
+            match actions::speak_normalized(&normalized, &player, self.speed())? {
+                SpeakEnd::Completed => SelectionOutcome::Spoke { replaced },
+                SpeakEnd::Interrupted => SelectionOutcome::Cut { replaced },
+            },
+        )
     }
 
     /// Takes the busy flag and publishes `current`, waiting up to
     /// `timeout` for an in-flight read to release it. `Duration::ZERO` is
     /// a plain try-acquire.
+    ///
+    /// With `displace`, a `stop()` is issued before **every** attempt, not
+    /// once before the loop, and that repetition is the fix for a real
+    /// protocol hole rather than defensive noise. `Player::speak` clears
+    /// the stop flag as its first act, and the read this call is
+    /// displacing may not have entered `speak` yet: `speak_selection`
+    /// publishes `current` and releases the takeover slot as soon as it
+    /// owns the busy flag — deliberately, so that a further press can
+    /// toggle it — which leaves a window (the `Player` read lock,
+    /// `detect_lang`'s lazily-loaded lingua models, `split_sentences`) in
+    /// which a single stop aimed at that read is wiped on entry. The
+    /// displaced passage then plays out in full while this call sits on
+    /// the busy flag, and if it outlasts `TAKEOVER_WAIT` the selection the
+    /// user actually asked for is dropped: "I selected new text, pressed
+    /// ⌘⇧A, and it just kept reading the old passage." Re-asserting puts
+    /// the flag back within one poll, and every iteration of
+    /// `Player::run`/`wait_for_drain` checks it.
+    ///
+    /// Re-asserting cannot hit this call's own read: the loop is left the
+    /// moment the flag is won, before `Player::speak` is entered, and
+    /// `speak` then clears the flag for itself.
     ///
     /// The returned guard releases both on drop — RAII rather than a
     /// plain store after the call returns, because the caller runs
@@ -329,13 +417,24 @@ impl App {
     /// panic is inside a spawned thread on every caller), and every later
     /// hotkey press or Service delivery reads `busy == true` forever and
     /// silently no-ops.
-    fn acquire_within(&self, current: Current, timeout: Duration) -> Option<BusyRelease<'_>> {
+    fn acquire_within(
+        &self,
+        current: Current,
+        timeout: Duration,
+        displace: bool,
+    ) -> Option<BusyRelease<'_>> {
         let deadline = Instant::now() + timeout;
-        while self
-            .busy
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
+        loop {
+            if displace {
+                self.stop();
+            }
+            if self
+                .busy
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                break;
+            }
             if Instant::now() >= deadline {
                 return None;
             }

@@ -123,11 +123,31 @@ impl TtsEngine for RecordingEngine {
 struct SlowEngine {
     calls: AtomicUsize,
     delay: Duration,
+    /// Live and peak concurrent `synthesize` calls. `Player::speak` is
+    /// documented single-caller — two concurrent ones interleave
+    /// `sink.append()` and race the shared `speaking`/`stop_flag` state —
+    /// so this is the property the busy flag's compare-exchange actually
+    /// buys, and the only direct way to observe it from outside.
+    inflight: AtomicUsize,
+    max_inflight: AtomicUsize,
+}
+impl SlowEngine {
+    fn new(delay: Duration) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            delay,
+            inflight: AtomicUsize::new(0),
+            max_inflight: AtomicUsize::new(0),
+        }
+    }
 }
 impl TtsEngine for SlowEngine {
     fn synthesize(&self, _text: &str, _lang: &str, _speed: f32) -> anyhow::Result<Pcm> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let now = self.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_inflight.fetch_max(now, Ordering::SeqCst);
         std::thread::sleep(self.delay);
+        self.inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(Pcm {
             samples: vec![0.0; 10],
             sample_rate: 44100,
@@ -189,6 +209,16 @@ impl AudioSink for FakeSink {
 }
 
 const ENGLISH_TEXT: &str = "The applicant must submit the completed form within four weeks.";
+
+/// A second, clearly different passage — for the paths that turn on the
+/// delivered text differing from what is playing.
+const OTHER_ENGLISH_TEXT: &str =
+    "The committee will publish its decision on the following Monday morning.";
+
+/// Three sentences, so a read of it is still in flight — and has already
+/// put a buffer into the sink — when a second press lands.
+const ENGLISH_THREE_SENTENCES: &str = "The applicant must submit the completed form within four \
+     weeks. A written decision follows shortly after that. No further documents are required.";
 
 /// Builds an `App` around a fresh `RecordingEngine`/`FakeSink` pair at the
 /// given speed. Used by the speed-liveness tests below, which only care
@@ -326,20 +356,19 @@ fn successful_selection_speaks_once_with_the_detected_language() {
 
 #[test]
 fn busy_guard_prevents_a_second_concurrent_speak() {
-    // The first call ties up the (single, shared) Player for 200ms. A
-    // second call made while that is in flight must never become a second
-    // concurrent `Player::speak`, which the doc comment on `Player::speak`
-    // says would interleave `sink.append()` calls and race shared state.
+    // The real probe of `acquire_within`'s compare-exchange, and it has to
+    // deliver *different* text to be one: the same text short-circuits at
+    // the `TogglePause` early return in `App::speak_selection` and never
+    // reaches the busy flag at all, so a version of this test built on a
+    // repeat press stays green with the CAS deleted. (That the repeat
+    // press toggles is a separate property, asserted below.)
     //
-    // The *same* text is no longer answered with silence —
-    // it toggles pause on the read in flight (see
-    // `tests/selection_toggle.rs`) — but that is still not a second
-    // `speak()`: the engine must have been invoked exactly once. If the
-    // guard were removed, `calls` would read 2 here.
-    let engine = Arc::new(SlowEngine {
-        calls: AtomicUsize::new(0),
-        delay: Duration::from_millis(200),
-    });
+    // Different text takes the Interrupt path, which stops the read in
+    // flight and then *waits* for the flag — so the two `Player::speak`
+    // calls must still never overlap. Replace the CAS with a plain store
+    // and the second call starts synthesising while the first is still
+    // inside its 200ms `synthesize`, which `max_inflight` sees as 2.
+    let engine = Arc::new(SlowEngine::new(Duration::from_millis(200)));
     let player = Player::new(
         Arc::clone(&engine) as Arc<dyn TtsEngine>,
         Arc::new(FakeSink),
@@ -353,28 +382,74 @@ fn busy_guard_prevents_a_second_concurrent_speak() {
     // `engine.synthesize` (which then sleeps for 200ms).
     std::thread::sleep(Duration::from_millis(50));
 
-    let second_result = app.speak_selection(ENGLISH_TEXT);
-
+    let second_result = app.speak_selection(OTHER_ENGLISH_TEXT);
     let first_result = handle.join().expect("first call should not panic");
 
-    // `FakeSink` is never paused, so the toggle resolves to a pause
-    // request against a Player that is speaking.
+    assert_eq!(
+        second_result.unwrap(),
+        SelectionOutcome::Spoke { replaced: true },
+        "a different selection must displace the read in flight and be \
+         spoken itself"
+    );
+    assert!(
+        first_result.is_ok(),
+        "a displaced read returns Ok, it is not an error"
+    );
+    assert_eq!(
+        engine.max_inflight.load(Ordering::SeqCst),
+        1,
+        "two `Player::speak` calls ran concurrently — the busy flag's \
+         compare-exchange did not hold, and `sink.append()` calls from the \
+         two reads would interleave"
+    );
+}
+
+#[test]
+fn the_same_selection_while_a_read_is_in_flight_toggles_instead_of_speaking() {
+    // The other half of what the busy guard used to be tested for: a
+    // repeat press must not start a second `speak()`. It no longer
+    // reaches the busy flag to be refused — it is answered earlier, by
+    // the toggle — so this asserts the toggle, not the flag.
+    let engine = Arc::new(SlowEngine::new(Duration::from_millis(200)));
+    let player = Player::new(
+        Arc::clone(&engine) as Arc<dyn TtsEngine>,
+        Arc::new(FakeSink),
+    );
+    let app = Arc::new(App::new(player, 1.0));
+
+    let app_bg = Arc::clone(&app);
+    let handle = std::thread::spawn(move || app_bg.speak_selection(ENGLISH_THREE_SENTENCES));
+
+    // Not merely "the engine has been entered": `Player::pause` refuses
+    // until audio has actually reached the sink, because pausing an empty
+    // sink parks the read forever (see `tests/selection_toggle.rs`). A
+    // second `synthesize` call means the first buffer has been appended.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while engine.calls.load(Ordering::SeqCst) < 2 {
+        assert!(Instant::now() < deadline, "the read never produced audio");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let second_result = app.speak_selection(ENGLISH_THREE_SENTENCES);
     assert_eq!(
         second_result.unwrap(),
         SelectionOutcome::Toggled { paused: true },
         "the same selection while a read is in flight must toggle it, \
          never start a second concurrent speak"
     );
+
+    // `FakeSink` models no pause, so the read runs on regardless — this
+    // test is about what the *decision* did, not about playback.
+    let first_result = handle.join().expect("first call should not panic");
     assert_eq!(
         first_result.unwrap(),
         SelectionOutcome::Spoke { replaced: false },
         "the first call should have run to completion"
     );
     assert_eq!(
-        engine.calls.load(Ordering::SeqCst),
+        engine.max_inflight.load(Ordering::SeqCst),
         1,
-        "the engine must have been invoked exactly once — a second \
-         concurrent invocation would mean the guard did not hold"
+        "the toggle must not have started a second concurrent speak"
     );
 }
 
@@ -511,10 +586,7 @@ fn swap_player_blocks_until_the_in_flight_utterance_releases_the_read_lock() {
     // speak() call and cutting it off. If swap_player were, say, a plain
     // field assignment behind no lock, this would return almost
     // instantly and the timing assertion below would fail.
-    let engine = Arc::new(SlowEngine {
-        calls: AtomicUsize::new(0),
-        delay: Duration::from_millis(200),
-    });
+    let engine = Arc::new(SlowEngine::new(Duration::from_millis(200)));
     let player = Player::new(
         Arc::clone(&engine) as Arc<dyn TtsEngine>,
         Arc::new(FakeSink),

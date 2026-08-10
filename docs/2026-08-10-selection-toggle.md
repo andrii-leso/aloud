@@ -112,6 +112,67 @@ deadline wrapper: a regression would otherwise *hang* the test binary rather tha
 test, because a paused sink never drains and the stall watchdog deliberately does not fire
 while paused.
 
+## 4a. Five more things the first round got wrong
+
+Four independent reviews of the first implementation found five defects that all share one
+shape: **the toggle turned states that used to be harmless into states that are acted on**,
+and each of those states already existed without a guard, because nothing had ever reached
+them automatically before.
+
+**A stopped read still names itself.** `current` was published by `acquire_within` and
+cleared only by `BusyRelease`, i.e. when the reading thread actually returns — which is up
+to one whole `engine.synthesize()` call after `stop()` silenced the audio (7-15s on a loaded
+machine). Tray → Stop, then ⌘⇧A on the same passage to start it again, was therefore decided
+as `TogglePause` and swallowed. `App::stop` now clears `current` itself; the press becomes an
+ordinary `Speak` that waits for the dying read to let go of the busy flag.
+
+**`is_speaking()` is true before there is any sound.** `Player::speak` sets it *before* the
+first `synthesize` call, so through the whole seconds-long silent pre-roll `Player::pause`'s
+guard reported "speaking" against an empty sink — precisely the paused-and-empty state that
+guard exists to make unrepresentable. A user who hears nothing and presses again used to get
+a no-op; they got a permanent park instead (first buffer into a paused sink, `wait_for_drain`
+on a frozen depth, `StallWatch` correctly refusing to fire while paused, busy flag held for
+good). `Player` now also tracks `audible` — set at the first `append`, cleared by `speak`
+entry and by every stop path — and `pause()` requires both. Deliberately not
+`sink.queued() > 0`: synthesis runs *behind* playback on a loaded machine, so an honest
+mid-read moment can show a depth of zero.
+
+**Stopping before knowing there is anything to say.** The Interrupt path called `stop()` and
+only then normalized. `normalize_ocr` drops every short all-digit block once a selection has
+more than one `"\n\n"` block — so `"42\n\n"` (a list marker with the blank line the drag
+picked up) or `"2024\n\n2025"` is a delivery `selection_worth_speaking` accepts and the
+normalizer empties. The live passage died and nothing replaced it, reported as
+`Spoke { replaced: true }`. `App::speak_selection` now runs `actions::speakable_selection`
+first and returns `SelectionOutcome::Empty` without touching anything.
+
+**A stop can be aimed at a read that has not started.** `speak_selection` releases the
+takeover slot as soon as it owns the busy flag and has published `current` — deliberately, so
+a further press can toggle — but `Player::speak` has not been entered yet, and its first act
+is to clear the stop flag. A press landing in that window (the player read lock,
+`detect_lang`'s lazy lingua load, `split_sentences`) issued a `stop()` that was then wiped,
+and blocked on the busy flag while the passage it meant to replace played out in full; past
+`TAKEOVER_WAIT`, the selection the user asked for was dropped entirely. `acquire_within` now
+re-asserts the stop on **every** poll rather than once before the loop.
+
+**rodio's third contract: `append` blocks after a `stop`.** `rodio::Player::stop` only sets a
+flag; the queue is emptied on the audio output thread, and `sound_count` falls only as the
+mixer pulls the samples. `append` therefore *begins* with `sleep_until_end()` — a bare
+`Receiver::recv()` with no timeout — when a stop is outstanding and buffers remain
+(rodio-0.22.2 `src/player.rs:109-115,313-316`). On a healthy device that is 5-15ms. On a
+device that has stopped consuming (Bluetooth drop, DAC unplugged) it never returns, and since
+the thread never reaches `wait_for_drain`, the 30s stall watchdog — the app's only guard for
+exactly that condition — never runs either: the busy flag is held by a parked thread and
+Aloud is bricked until relaunch, with nothing in the log. This pairing pre-dates the toggle
+(the tray's Stop could produce it) but was a rare manual sequence; the Interrupt path fires
+it automatically on every different-selection press. `RodioInner` now marks the stop and
+waits, bounded, for `len()` to reach zero before appending, turning a permanent silent hang
+back into an ordinary `Err` that unwinds the read and surfaces in the tray.
+
+**And a reporting fix that falls out of the same review:** `Player::speak` returns
+`SpeakEnd::{Completed, Interrupted}` rather than `Ok(())`, so a displaced read no longer logs
+"completed, spoke" and resets the tray status while its replacement is already speaking.
+That propagates to `Outcome::Interrupted` and `SelectionOutcome::Cut { replaced }`.
+
 ## 5. What is deliberately unchanged
 
 The region path. `App::read_region` acquires with `Duration::ZERO`, i.e. a plain
@@ -124,26 +185,40 @@ state machine, which is exactly the right signal: the region path does not go th
 
 ## 6. Coverage
 
-`tests/selection_toggle.rs`, 13 tests. Seven drive the pure function; six drive `App` against
-a real `Player` with a fake engine and a sink that models rodio's pause semantics.
+`tests/selection_toggle.rs`, 16 tests. Six drive the pure function; ten drive `App` against a
+real `Player` with a fake engine and a sink that models rodio's pause semantics.
 
 | Test | Pins |
 |---|---|
 | `the_same_selection_delivered_again_toggles_pause` | same text → toggle, not restart, not drop |
 | `a_different_selection_interrupts_the_read_in_flight` | different text → interrupt |
 | `a_selection_delivered_during_a_region_read_always_interrupts` | a region read is never a toggle target |
-| `a_finished_read_leaves_nothing_to_toggle_against` | no stale "currently reading" after a natural end |
+| `nothing_in_flight_reads_the_delivered_text` | `None` → read. (There used to be a second, byte-identical test named for the finished-read case; it could not observe anything the first did not, and the property it was credited with is pinned at the `App` level below.) |
 | `comparison_ignores_whitespace_at_the_ends` / `..._does_not_normalise_interior_whitespace` | the §3 rule, in both directions |
 | `the_same_selection_pressed_again_pauses_then_resumes` | pause leaves the read in flight; resume continues; exactly one synthesis per sentence |
 | `a_different_selection_stops_the_current_read_and_starts_the_new_one` | the displaced read is cut short, the new one is read in full, and `max_inflight == 1` |
-| `a_selection_arriving_during_a_region_read_takes_over` | the ⌘⇧A-during-⌘⇧R case works and does not deadlock against the busy flag |
+| `a_selection_arriving_during_a_region_read_takes_over` | the ⌘⇧A-during-⌘⇧R case works, does not deadlock, and **actually stops** the region read rather than waiting it out (`calls_mentioning("Alpha") < 12`, plus `Outcome::Interrupted`) |
+| `a_takeover_still_stops_a_read_that_has_not_reached_the_player_yet` | §4a's re-asserted stop: a blocking `RegionSelector` parks a read that owns the busy flag but has not entered `Player::speak`, which is the state a single stop is wiped in |
 | `a_repeat_region_press_is_still_a_silent_no_op` | the region guard is not weakened |
 | `a_finished_read_does_not_leave_text_behind_that_toggles_instead_of_reading` | a second identical press after completion reads, not pauses |
+| `stop_then_the_same_selection_starts_a_fresh_read_rather_than_toggling` | `App::stop` clears `current`, so a Stop followed by ⌘⇧A is not a pause of silence |
+| `a_press_during_the_silent_pre_roll_is_not_taken_as_a_pause` | the `audible` half of `Player::pause`'s guard; without it the read parks forever and the test binary hangs (hence the deadline wrapper) |
+| `a_selection_that_normalizes_to_nothing_leaves_the_read_in_flight_alone` | nothing is stopped before the new text is known to be speakable; asserts its own premise against `normalize_ocr` and `selection_worth_speaking` |
 | `superseding_a_paused_read_does_not_leave_the_new_one_playing_into_a_paused_sink` | the rodio trap, end to end |
 
-Two of these assert `ConcurrencyEngine::max_inflight == 1`, which is the real replacement for
-what the old blanket no-op was buying: `Player::speak` stays single-caller across an
+Several of these assert `ConcurrencyEngine::max_inflight == 1`, which is the real replacement
+for what the old blanket no-op was buying: `Player::speak` stays single-caller across an
 interrupt.
+
+`tests/actions.rs::busy_guard_prevents_a_second_concurrent_speak` delivers *different* text on
+purpose. A repeat press short-circuits at the `TogglePause` early return and never reaches the
+busy flag, so a version of that test built on a repeat stays green with the compare-exchange
+deleted — it asserts `max_inflight == 1` across an Interrupt instead. The repeat-press property
+is asserted separately by `the_same_selection_while_a_read_is_in_flight_toggles_instead_of_speaking`.
+`src/play/sink.rs`'s unit tests cover the bounded stopped-queue drain from §4a.
+
+Each of the eight guards above was checked by mutation: the fix was reverted one at a time and
+the named test confirmed to fail.
 
 The stall-watchdog guarantee (a pause longer than 30s must not abort the read) is untouched
 and still pinned by Phase 1's `a_paused_queue_is_not_a_stalled_device` and

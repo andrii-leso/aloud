@@ -140,8 +140,11 @@ fn set_error_status(rt: &Runtime, message: &str) {
 ///
 /// Status policy: a busy skip and a deliberate Escape cancel both leave
 /// the tray status untouched — the first because a read is already
-/// underway, the second because a cancel is not a failure. A successful
-/// read resets the status to `Ready` (clearing any stale error). An
+/// underway, the second because a cancel is not a failure. A read that
+/// runs to the end resets the status to `Ready` (clearing any stale
+/// error); one that was stopped before the end — displaced by a ⌘⇧A
+/// takeover, or the tray's Stop — deliberately does not, since it did not
+/// complete and whatever replaced it will report for itself. An
 /// empty result (captured something, found no text) and any `Err` (most
 /// importantly the missing Screen Recording permission from Task 3,
 /// whose message already names System Settings and the required
@@ -165,6 +168,13 @@ fn spawn_read_region(rt: Arc<Runtime>) {
             Ok(Some(Outcome::Spoke)) => {
                 aloud::log_line!("read_region: completed, spoke");
                 reset_status(&rt);
+            }
+            Ok(Some(Outcome::Interrupted)) => {
+                // Displaced by a ⌘⇧A takeover, or the tray's Stop.
+                // Deliberately does NOT reset the status: this read did
+                // not complete, and whatever replaced it is speaking now
+                // and will report for itself.
+                aloud::log_line!("read_region: stopped before the end (displaced or stopped)");
             }
             Ok(Some(Outcome::Empty)) => {
                 eprintln!("[aloud] read_region: no text found in the captured region");
@@ -1311,17 +1321,38 @@ fn main() {
                                 );
                                 reset_status(&rt);
                             }
+                            Ok(SelectionOutcome::Cut { replaced }) => {
+                                // This read was itself displaced. No
+                                // `reset_status`: it did not complete, and
+                                // its replacement is already speaking.
+                                aloud::log_line!(
+                                    "speak_selection: stopped before the end{}",
+                                    if replaced { " (had replaced the read in flight)" } else { "" }
+                                );
+                            }
                             Ok(SelectionOutcome::Toggled { paused }) => {
                                 aloud::log_line!(
                                     "speak_selection: same selection delivered again, now {}",
                                     if paused { "paused" } else { "playing" }
                                 );
                             }
-                            Ok(SelectionOutcome::Skipped) => {
+                            Ok(SelectionOutcome::Empty) => {
                                 aloud::log_line!(
-                                    "speak_selection: skipped, another selection is already \
-                                     taking over"
+                                    "speak_selection: nothing speakable in the delivered \
+                                     selection; anything already playing was left alone"
                                 );
+                            }
+                            Ok(SelectionOutcome::Skipped) => {
+                                // Two different causes, and `App` has
+                                // already logged which one — a takeover
+                                // already under way (harmless), or a
+                                // takeover that waited out TAKEOVER_WAIT
+                                // having already silenced the audio (not
+                                // harmless at all). Naming one of them
+                                // here would make the log carry a true
+                                // line and a false one about the same
+                                // event.
+                                aloud::log_line!("speak_selection: skipped, see the reason above");
                             }
                             Err(e) => {
                                 eprintln!("[aloud] speak_selection failed: {e:#}");

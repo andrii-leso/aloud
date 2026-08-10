@@ -1,7 +1,7 @@
 //! Pause/resume: the stall-watchdog interaction, and the guarantee that
 //! pausing never costs already-synthesised audio.
 
-use aloud::play::player::{Player, StallWatch};
+use aloud::play::player::{Player, SpeakEnd, StallWatch};
 use aloud::play::sink::AudioSink;
 use aloud::tts::{Pcm, TtsEngine};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -206,7 +206,7 @@ impl TtsEngine for CountingEngine {
 fn spawn_speaking(
     player: Arc<Player>,
     text: &'static str,
-) -> std::thread::JoinHandle<anyhow::Result<()>> {
+) -> std::thread::JoinHandle<anyhow::Result<SpeakEnd>> {
     std::thread::spawn(move || player.speak(text, "en", 1.0))
 }
 

@@ -40,7 +40,9 @@ holds its exact position. Resume continues at the sample it stopped on. That is 
 not a fade or a mute, and it is why the "stop and re-synthesise" fallback (which would re-read the
 sentence from its start, and is not pause) was never needed.
 
-Two things `rodio` does **not** do, both of which had to be handled here:
+Three things `rodio` does **not** do, all of which had to be handled here (the third was found
+later, by review of the ⌘⇧A toggle — see
+[`2026-08-10-selection-toggle.md`](2026-08-10-selection-toggle.md) §4a):
 
 - **`stop()` does not clear the pause flag.** `stop()` sets `stopped`; `pause` is an independent
   control it never touches (`player.rs:264` vs `:301`). Stop-while-paused therefore leaves a sink
@@ -49,8 +51,27 @@ Two things `rodio` does **not** do, both of which had to be handled here:
   `AudioSink::stop` doc pins this as a trait-level contract so test doubles model it too.
 - **Pausing an idle sink is legal and silently poisonous.** Nothing stops you pausing a sink with
   nothing playing; the damage only appears on the *next* read. `Player::pause()` refuses unless
-  `is_speaking()`, and `Player::speak()` clears the pause flag on entry to close the narrow race
-  where a pause lands just as the previous utterance drains its last buffer.
+  something is playing, and `Player::speak()` clears the pause flag on entry to close the narrow
+  race where a pause lands just as the previous utterance drains its last buffer.
+  **`is_speaking()` alone turned out not to be that predicate.** It is set *before* the first
+  `engine.synthesize()` call, so it is true through the entire silent pre-roll (seconds, and
+  load-dependent), and true again for the seconds between a `stop()` and the speaking thread
+  unwinding — both of which are exactly the empty-sink case this refusal exists for. `Player`
+  therefore also carries `audible`, set at the first `append` and cleared by `speak` entry and by
+  every stop path, and `pause()` requires both. Not `sink.queued() > 0`: synthesis runs behind
+  playback on a loaded machine, so an ordinary mid-read moment can honestly report a depth of
+  zero.
+- **`append()` blocks — unbounded — after a `stop()`.** `stop()` only *marks* the queue; the
+  emptying happens on the audio output thread, in the `periodic_access` callback
+  (`player.rs:131`), and `sound_count` falls only as `Done::next` observes the mixer drain each
+  source (`source/done.rs:56`). So `append` opens with "if `stopped` and `sound_count > 0`,
+  `sleep_until_end()`" (`player.rs:109-115`), and `sleep_until_end` is a bare `Receiver::recv()`
+  with no timeout (`player.rs:313-316`). On a healthy device that is 5-15ms and invisible; on a
+  device that has stopped consuming it never returns. The thread then never reaches
+  `wait_for_drain`, so the 30s stall watchdog — the only guard for a dead device — never runs
+  either, and `App`'s busy flag is held by a parked thread with nothing in the log. `RodioInner`
+  records the stop and waits, bounded (2s), for `len()` to reach zero before appending, failing
+  with an ordinary `Err` if it does not.
 
 **Verified against a real device, not just the source.** `tests/player_pause.rs` carries an
 `#[ignore]`d test, `rodio_really_pauses_without_discarding_buffers`, that opens the default output
