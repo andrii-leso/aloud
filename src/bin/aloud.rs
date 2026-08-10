@@ -72,13 +72,11 @@ struct Runtime {
     /// can update its label after a rebind without rebuilding the menu.
     read_region_item: MenuItem<tauri::Wry>,
     /// Handle to the tray's Pause/Resume item. Its label is rendered from
-    /// `App::is_paused()` — see `refresh_pause_label`.
+    /// `App::is_paused()` — see `refresh_pause_label`. This item is the
+    /// only pause control that works with no selection: ⌘⇧A pauses too,
+    /// but it arrives as a macOS Service, and macOS will not invoke a
+    /// Service with nothing selected.
     pause_item: MenuItem<tauri::Wry>,
-    /// The pause/resume accelerator actually registered with the OS right
-    /// now, or `None`. Separate slot from `registered_shortcut` for the
-    /// same reason that one exists: it is OS ground truth, and
-    /// `apply_shortcut_with` diffs and rolls back against it.
-    registered_pause_shortcut: Mutex<Option<String>>,
     /// Retained so a live voice swap (`spawn_voice_swap`) can build a new
     /// `Player` around the same audio output rather than opening a second
     /// device — only the engine changes.
@@ -520,63 +518,34 @@ fn refresh_tray_labels(app: &tauri::AppHandle, region_shortcut: &str) {
     ));
 }
 
-/// The Pause/Resume item's label, for a given paused state and chord.
-/// Pure, so the one property that matters — the label names the action
-/// the click will perform, never the state it is already in — is testable
-/// without a tray. A "Pause" item on a paused read is the lying-control
-/// defect class this app has spent the week removing.
-fn pause_label(paused: bool, accel: &str) -> String {
-    let verb = if paused { "Resume" } else { "Pause" };
-    let pretty = pretty_accelerator(accel);
-    if pretty.is_empty() {
-        // Nothing registered: showing "( )" would advertise a chord that
-        // does not exist. The item itself still works.
-        verb.to_string()
-    } else {
-        format!("{verb}  ({pretty})")
-    }
+/// The Pause/Resume item's label, for a given paused state. Pure, so the
+/// one property that matters — the label names the action the click will
+/// perform, never the state it is already in — is testable without a
+/// tray. A "Pause" item on a paused read is the lying-control defect
+/// class this app has spent the week removing.
+///
+/// No chord is shown. Pause has no global hotkey of its own: ⌘⇧A is the
+/// keyboard route (see `intent::decide_selection`), and naming it here
+/// would be a lie whenever nothing is selected, which is the one case
+/// this item exists for.
+fn pause_label(paused: bool) -> String {
+    if paused { "Resume" } else { "Pause" }.to_string()
 }
 
 /// Re-renders the Pause/Resume label from ground truth.
 ///
 /// Reads `App::is_paused()` (which reads the sink) rather than taking a
 /// bool, so no call site can hand it a stale value. Must be called after
-/// anything that can change the paused state: both toggle triggers, Stop,
-/// and the end of a read.
+/// anything that can change the paused state: the tray's Pause/Resume
+/// item, the ⌘⇧A toggle, Stop, and the end of a read.
 fn refresh_pause_label(rt: &Runtime) {
-    let accel = rt
-        .registered_pause_shortcut
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_default();
-    let _ = rt
-        .pause_item
-        .set_text(pause_label(rt.app.is_paused(), &accel));
+    let _ = rt.pause_item.set_text(pause_label(rt.app.is_paused()));
 }
 
-/// True if the fired shortcut is the registered pause/resume chord.
-///
-/// Compared against `registered_pause_shortcut` — OS ground truth — not
-/// against the persisted setting, for the same reason `apply_shortcut`
-/// diffs against ground truth: if the pause chord failed to register, the
-/// persisted value names a chord that cannot fire, and matching on it
-/// would misroute whatever the OS actually did deliver.
-///
-/// `Shortcut` is `global_hotkey::hotkey::HotKey`, whose `PartialEq`
-/// covers `mods`, `key`, and `id` — and `id` is derived from the other
-/// two (`(mods.bits() << 16) | key as u32`), so two independent parses of
-/// the same accelerator compare equal.
-fn is_pause_shortcut(rt: &Runtime, fired: &Shortcut) -> bool {
-    let Some(accel) = rt.registered_pause_shortcut.lock().unwrap().clone() else {
-        return false;
-    };
-    accel.parse::<Shortcut>().is_ok_and(|s| s == *fired)
-}
-
-/// Toggles pause and re-syncs the tray. The single entry point for both
-/// triggers (tray item and global hotkey), so neither can update state
-/// without also updating the label.
+/// Toggles pause and re-syncs the tray. The tray item's only entry
+/// point, so it cannot update the state without also updating the label.
+/// The ⌘⇧A route does not come through here — it toggles inside
+/// `App::speak_selection` and its caller refreshes the label itself.
 fn toggle_pause(rt: &Runtime) {
     let paused = rt.app.toggle_pause();
     aloud::log_line!("pause: now {}", if paused { "paused" } else { "playing" });
@@ -906,16 +875,15 @@ fn main() {
                     }
                     aloud::log_line!("hotkey: {shortcut:?} pressed");
                     let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
-                    // Dispatch on which chord fired. This must come BEFORE
-                    // the probe check: the probe consumes the *next* press
-                    // as proof the region chord is live, and it does not
-                    // look at which shortcut arrived, so without this a
-                    // pause press would falsely confirm a region chord
-                    // that may in fact be shadowed by another app.
-                    if is_pause_shortcut(&rt, shortcut) {
-                        toggle_pause(&rt);
-                        return;
-                    }
+                    // The region chord is the only shortcut Aloud registers
+                    // globally, so there is nothing to dispatch on here. If
+                    // a second one is ever added, its dispatch must come
+                    // BEFORE the probe check: the probe consumes the *next*
+                    // press as proof the region chord is live and does not
+                    // look at which shortcut arrived, so any other chord
+                    // would falsely confirm a region chord that may in fact
+                    // be shadowed by another app.
+                    //
                     // A liveness probe swallows the press instead of reading
                     // a region.
                     if probe_consumed(app, shortcut) {
@@ -1013,13 +981,8 @@ fn main() {
             // Built as "Pause" because nothing is speaking at startup, so
             // nothing is paused. Every later change goes through
             // `refresh_pause_label`, which reads the sink.
-            let pause_item = MenuItem::with_id(
-                app,
-                "pause",
-                pause_label(false, &settings.pause_shortcut),
-                true,
-                None::<&str>,
-            )?;
+            let pause_item =
+                MenuItem::with_id(app, "pause", pause_label(false), true, None::<&str>)?;
             let stop_item = MenuItem::with_id(app, "stop", "Stop", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Aloud", true, None::<&str>)?;
             let menu = Menu::with_items(
@@ -1087,8 +1050,6 @@ fn main() {
                 read_region_item,
                 pause_item,
                 sink,
-                // Nothing registered yet, same as the region slot below.
-                registered_pause_shortcut: Mutex::new(None),
                 // Nothing is registered with the OS yet — the block below
                 // is what first does that.
                 registered_shortcut: Mutex::new(None),
@@ -1238,53 +1199,14 @@ fn main() {
                 }
             }
 
-            // Pause/resume, registered the same way and through the same
-            // `apply_shortcut_with` machinery — only the ground-truth slot
-            // differs. An ordinary chord, never a media key: that is what
-            // keeps this off the `CGEventTap` path and therefore out of
-            // the Accessibility prompt entirely (see
-            // docs/media-key-control-research.md §4).
-            //
-            // Failure here is softer than a dead region hotkey: the tray's
-            // Pause/Resume item still works, so this logs and falls back to
-            // the default rather than escalating. The tray label is
-            // re-rendered from whatever actually registered, so it never
-            // advertises a chord that is not live — including the case
-            // where nothing registered at all, which renders as a bare
-            // "Pause" with no chord.
-            {
-                let handle = app.handle().clone();
-                let rt = Arc::clone(app.state::<Arc<Runtime>>().inner());
-                let wanted = settings.pause_shortcut.clone();
-                let registrar = GlobalShortcutRegistrar(&handle);
-                let mut applied = apply_shortcut_with(
-                    &registrar,
-                    &rt.registered_pause_shortcut,
-                    &wanted,
-                );
-                if applied.is_err() && wanted != aloud::settings::DEFAULT_PAUSE_SHORTCUT {
-                    aloud::log_line!("pause hotkey: failed to register {wanted}, trying default");
-                    applied = apply_shortcut_with(
-                        &registrar,
-                        &rt.registered_pause_shortcut,
-                        aloud::settings::DEFAULT_PAUSE_SHORTCUT,
-                    );
-                }
-                match applied {
-                    Ok(()) => aloud::log_line!(
-                        "pause hotkey: registered {:?}",
-                        rt.registered_pause_shortcut.lock().unwrap().clone()
-                    ),
-                    Err(e) => {
-                        aloud::log_line!("pause hotkey: none registered: {e}");
-                        set_error_status(
-                            &rt,
-                            "No pause shortcut could be registered; use the tray's Pause item.",
-                        );
-                    }
-                }
-                refresh_pause_label(&rt);
-            }
+            // Pause/resume has no global hotkey of its own, deliberately.
+            // ⌘⇧A already pauses and resumes the read it started (see
+            // `intent::decide_selection`), so a second chord would be
+            // redundant surface — and the one it had, ⌘⇧P, is VS Code's
+            // Command Palette, which a non-exclusive global hotkey wins
+            // while Aloud runs. The tray's Pause/Resume item stays as the
+            // fallback for the case ⌘⇧A cannot cover: macOS will not
+            // invoke a Service with nothing selected.
 
             // The selection path is a macOS Service, not a hotkey we own:
             // the system hands us the user's selected text via
@@ -1542,34 +1464,28 @@ mod pause_label_tests {
     #[test]
     fn names_the_action_the_click_performs_not_the_current_state() {
         assert_eq!(
-            pause_label(false, "CmdOrCtrl+Shift+P"),
-            "Pause  (⌘⇧P)",
+            pause_label(false),
+            "Pause",
             "while playing, the item must offer Pause"
         );
         assert_eq!(
-            pause_label(true, "CmdOrCtrl+Shift+P"),
-            "Resume  (⌘⇧P)",
+            pause_label(true),
+            "Resume",
             "while paused, the item must offer Resume - never 'Pause'"
         );
     }
 
     #[test]
-    fn renders_the_shipped_default_chord() {
-        // Pinned against `settings::DEFAULT_PAUSE_SHORTCUT`.
-        assert_eq!(
-            pause_label(false, aloud::settings::DEFAULT_PAUSE_SHORTCUT),
-            "Pause  (⌘⇧P)"
-        );
-    }
-
-    #[test]
-    fn advertises_no_chord_when_nothing_is_registered() {
-        // `refresh_pause_label` passes an empty string when the OS holds
-        // no pause accelerator (registration failed). Showing "Pause  ()"
-        // would be advertising a shortcut that does not exist; the item
-        // itself still works, so the verb stays.
-        assert_eq!(pause_label(false, ""), "Pause");
-        assert_eq!(pause_label(true, ""), "Resume");
+    fn advertises_no_chord() {
+        // Pause has no global hotkey. Naming ⌘⇧A here would be a lie in
+        // exactly the case this item exists for — nothing selected, so
+        // macOS will not invoke the Service and the chord cannot fire.
+        for label in [pause_label(false), pause_label(true)] {
+            assert!(
+                !label.contains('('),
+                "the pause item must not advertise a chord, got {label:?}"
+            );
+        }
     }
 }
 

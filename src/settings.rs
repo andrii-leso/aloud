@@ -11,17 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_SHORTCUT: &str = "CmdOrCtrl+Shift+R";
-
-/// Pause/resume. An ordinary chord, never a media key: media keys are the
-/// only path in `global-hotkey` that reaches `CGEventTapCreate`, and an
-/// active tap from an untrusted process returns NULL — measured on this
-/// machine, macOS 26.6, see `docs/media-key-control-research.md` §4.
-///
-/// ⌘⇧P sits beside the ⌘⇧R region chord, carries a modifier (so it cannot
-/// fire mid-typing), is not in `shortcut::SYSTEM_CHORDS`, and is not a
-/// documented macOS system shortcut — ⌘P is Print, but that is
-/// app-level, not a global reservation.
-pub const DEFAULT_PAUSE_SHORTCUT: &str = "CmdOrCtrl+Shift+P";
 pub const DEFAULT_VOICE: &str = "F5";
 pub const DEFAULT_SPEED: f32 = 1.0;
 
@@ -38,15 +27,21 @@ pub const VOICES: [&str; 2] = ["F5", "M5"];
 
 const FILE_NAME: &str = "settings.json";
 
+/// Two serde behaviours here are load-bearing for migration, in both
+/// directions, and neither may be tightened. The container-level
+/// `#[serde(default)]` lets a file written *before* a field existed still
+/// load, filling the gap rather than rejecting the document. And the
+/// absence of `deny_unknown_fields` lets a file written *after* a field
+/// was removed still load: any `settings.json` a Phase 1 build saved
+/// carries a `pause_shortcut` key for the since-retired pause chord, and
+/// it must be ignored silently, leaving the region shortcut, voice, speed
+/// and launch state intact. Either failure mode ends the same way —
+/// `load` falls back to defaults and the user silently loses every saved
+/// value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub region_shortcut: String,
-    /// Pause/resume chord. The container-level `#[serde(default)]` above
-    /// is what lets a `settings.json` written before this field existed
-    /// still load — the owner's current config has no `pause_shortcut`
-    /// key and must keep working untouched.
-    pub pause_shortcut: String,
     pub voice: String,
     pub speed: f32,
     /// Whether the user has asked Aloud to start at login.
@@ -74,7 +69,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             region_shortcut: DEFAULT_SHORTCUT.to_string(),
-            pause_shortcut: DEFAULT_PAUSE_SHORTCUT.to_string(),
             voice: DEFAULT_VOICE.to_string(),
             speed: DEFAULT_SPEED,
             // Off. Building the feature must not turn it on for anyone,
@@ -137,23 +131,20 @@ impl Settings {
             log_line!("settings: unknown voice {:?}, using default", self.voice);
             self.voice = DEFAULT_VOICE.to_string();
         }
-        Self::normalize_shortcut(&mut self.region_shortcut, DEFAULT_SHORTCUT, "region");
-        Self::normalize_shortcut(&mut self.pause_shortcut, DEFAULT_PAUSE_SHORTCUT, "pause");
-    }
-
-    /// Every persisted shortcut goes through this, not just the region
-    /// one. A hand-edited settings.json is the only way a media key can
-    /// reach `register()` without passing through `Chord::to_accelerator`,
-    /// and registering one creates a session-level `CGEventTap` — the
-    /// thing that makes macOS demand Accessibility / Input Monitoring.
-    /// Aloud never asks for that, so the value survives neither a load nor
-    /// a save, on either field.
-    fn normalize_shortcut(value: &mut String, default: &str, what: &str) {
-        if value.trim().is_empty() {
-            *value = default.to_string();
-        } else if crate::shortcut::is_media_accelerator(value) {
-            log_line!("settings: {what} shortcut {value:?} names a media key, using default");
-            *value = default.to_string();
+        if self.region_shortcut.trim().is_empty() {
+            self.region_shortcut = DEFAULT_SHORTCUT.to_string();
+        } else if crate::shortcut::is_media_accelerator(&self.region_shortcut) {
+            // A hand-edited settings.json is the only way a media key can
+            // reach `register()` without passing through
+            // `Chord::to_accelerator`, and registering one creates a
+            // session-level CGEventTap — the thing that makes macOS demand
+            // Accessibility / Input Monitoring access. Aloud never asks for
+            // that, so the value does not survive a load or a save.
+            log_line!(
+                "settings: region shortcut {:?} names a media key, using default",
+                self.region_shortcut
+            );
+            self.region_shortcut = DEFAULT_SHORTCUT.to_string();
         }
     }
 

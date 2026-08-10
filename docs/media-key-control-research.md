@@ -222,7 +222,9 @@ reconsider it.**
 
 > **SUPERSEDED 2026-08-10 — this section's premise no longer holds. Phase 1 built it.**
 > Pause/resume now exists behind the `AudioSink` seam, the stall-guard trap named below is
-> fixed, and both are shipped with an ordinary `Cmd+Shift+P` hotkey and a tray item. Every
+> fixed, and both are shipped. Phase 1 also gave pause its own ordinary `Cmd+Shift+P` chord;
+> that chord was **removed** the same day as redundant surface, since `⌘⇧A` had by then become a
+> selection-aware play/pause toggle. Pause is reached by `⌘⇧A` and the tray item. Every
 > prediction in this section held up under implementation, including the 30s stall trap, which
 > was reproduced as a failing test before being fixed. The section is kept as written — it was
 > the research that motivated the work — but read

@@ -1,4 +1,4 @@
-use aloud::settings::{Settings, DEFAULT_PAUSE_SHORTCUT, DEFAULT_SHORTCUT};
+use aloud::settings::{Settings, DEFAULT_SHORTCUT};
 use std::fs;
 
 fn tmpdir(name: &str) -> std::path::PathBuf {
@@ -27,7 +27,6 @@ fn round_trips_through_disk() {
     let d = tmpdir("roundtrip");
     let s = Settings {
         region_shortcut: "Alt+Shift+E".into(),
-        pause_shortcut: "Alt+Shift+K".into(),
         voice: "M5".into(),
         speed: 1.25,
         launch_at_login: true,
@@ -35,7 +34,6 @@ fn round_trips_through_disk() {
     s.save(&d).unwrap();
     let back = Settings::load(&d);
     assert_eq!(back.region_shortcut, "Alt+Shift+E");
-    assert_eq!(back.pause_shortcut, "Alt+Shift+K");
     assert_eq!(back.voice, "M5");
     assert_eq!(back.speed, 1.25);
     assert!(back.launch_at_login);
@@ -62,16 +60,26 @@ fn a_settings_file_written_before_launch_at_login_existed_still_loads() {
 }
 
 #[test]
-fn a_settings_file_written_before_pause_shortcut_existed_still_loads() {
-    // The owner's live settings.json has no `pause_shortcut` key. Same
-    // guard as the field above: the container-level #[serde(default)]
-    // must fill it in, leaving every other saved value intact. Without
-    // it, shipping pause/resume would silently reset his shortcut, voice
-    // and speed on the first launch.
-    let d = tmpdir("pre-pause");
+fn a_settings_file_still_carrying_the_retired_pause_shortcut_loads_untouched() {
+    // Any settings.json a Phase 1 build saved carries a `pause_shortcut`
+    // key that no longer maps to a field. Serde must ignore it — no
+    // `deny_unknown_fields`, now or ever. If it were rejected the whole
+    // document fails to parse, `load` falls back to defaults, and the
+    // user silently loses his region shortcut, voice, speed and
+    // launch-at-login on the next launch: the exact failure removing a
+    // field is supposed to be free of.
+    //
+    // The owner's own live file happens not to carry the key — the Phase
+    // 1 bundle was never installed over /Applications/Aloud.app — so this
+    // guard is not currently load-bearing for him. It is still the wrong
+    // thing to leave untested: a settings.json is user data, and "it
+    // happens not to have that key today" is not a property the code can
+    // rely on.
+    let d = tmpdir("post-pause");
     fs::write(
         d.join("settings.json"),
-        br#"{"region_shortcut":"Alt+Shift+E","voice":"M5","speed":1.5,"launch_at_login":true}"#,
+        br#"{"region_shortcut":"Alt+Shift+E","pause_shortcut":"CmdOrCtrl+Shift+P",
+             "voice":"M5","speed":1.5,"launch_at_login":true}"#,
     )
     .unwrap();
     let s = Settings::load(&d);
@@ -79,55 +87,18 @@ fn a_settings_file_written_before_pause_shortcut_existed_still_loads() {
     assert_eq!(s.voice, "M5");
     assert_eq!(s.speed, 1.5);
     assert!(s.launch_at_login);
-    assert_eq!(
-        s.pause_shortcut, DEFAULT_PAUSE_SHORTCUT,
-        "a config predating the field must get the default, not an empty chord"
+
+    // And the dead key does not come back out: the next save writes the
+    // current shape, so the file self-cleans on the first settings
+    // change rather than carrying the retired chord forever.
+    s.save(&d).unwrap();
+    let raw = fs::read_to_string(d.join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(
+        written.get("pause_shortcut").is_none(),
+        "a save must not write the retired key back out, got {raw}"
     );
-}
-
-#[test]
-fn a_media_key_pause_shortcut_does_not_survive_a_load() {
-    // The same screen the region shortcut gets, on the new field: a
-    // hand-edited media key here would reach `register()` and create the
-    // session-level CGEventTap that makes macOS demand Accessibility.
-    let d = tmpdir("pause-mediakey");
-    fs::write(
-        d.join("settings.json"),
-        br#"{"pause_shortcut":"CmdOrCtrl+MediaPlayPause"}"#,
-    )
-    .unwrap();
-    assert_eq!(Settings::load(&d).pause_shortcut, DEFAULT_PAUSE_SHORTCUT);
-}
-
-#[test]
-fn an_empty_pause_shortcut_falls_back_to_the_default() {
-    let d = tmpdir("pause-empty");
-    fs::write(d.join("settings.json"), br#"{"pause_shortcut":"  "}"#).unwrap();
-    assert_eq!(Settings::load(&d).pause_shortcut, DEFAULT_PAUSE_SHORTCUT);
-}
-
-#[test]
-fn the_default_pause_chord_is_accepted_by_the_shortcut_validator() {
-    // The shipped default must survive the same screens a user-recorded
-    // chord does — a default that the denylist rejects would ship a
-    // permanently dead hotkey.
-    assert!(!aloud::shortcut::is_media_accelerator(
-        DEFAULT_PAUSE_SHORTCUT
-    ));
-    let chord = aloud::shortcut::Chord {
-        code: "KeyP".into(),
-        meta: true,
-        ctrl: false,
-        alt: false,
-        shift: true,
-    };
-    assert_eq!(
-        chord
-            .to_accelerator()
-            .expect("Cmd+Shift+P must be bindable"),
-        DEFAULT_PAUSE_SHORTCUT,
-        "the recorded-chord path must produce exactly the shipped default"
-    );
+    assert_eq!(written["region_shortcut"], "Alt+Shift+E");
 }
 
 #[test]

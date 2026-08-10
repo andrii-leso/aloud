@@ -11,6 +11,18 @@ Scope was Phase 1 only: **no media key, no `MPRemoteCommandCenter`, no `objc2-me
 Nothing in this change set touches that decision, and the research doc's §2 hand-back test is
 still unrun.
 
+> **PARTIALLY SUPERSEDED, 2026-08-10 — the `⌘⇧P` chord was removed.** Everything below about the
+> audio layer stands: the `Pausable` mechanism, the pause-aware stall watchdog, the `audible`
+> predicate, the bounded-append fix, the tray item. Only the **separate global hotkey** is gone,
+> along with the `pause_shortcut` setting, its default, its media-key screen and its
+> registration block. Phase 1 was built before `⌘⇧A` became a selection-aware play/pause toggle
+> (`docs/2026-08-10-selection-toggle.md`); once it was, a second chord was redundant surface —
+> and §6's first argument-against, the VS Code Command Palette collision, was the live cost of
+> keeping it. Pause is now reached two ways: `⌘⇧A` when there is a selection, and the tray's
+> Pause/Resume item when there is not (macOS will not invoke a Service with nothing selected, so
+> the tray item is not a convenience — it is the only control that covers that case). Sections
+> below are kept as written; the two places that describe the chord carry their own notes.
+
 ---
 
 ## 1. What `rodio` 0.22.2 actually supports
@@ -160,7 +172,14 @@ asserting both directions. It is re-rendered after every mutation point: both to
 `Stop` (which clears the pause), and the end of a read on all paths including the error unwind.
 When no chord is registered it renders as a bare `Pause` rather than advertising an empty one.
 
-**Hotkey.** `Cmd+Shift+P`, an ordinary chord. It goes through the existing Carbon
+**Hotkey. — REMOVED, see the banner at the top.** The three paragraphs below describe a chord
+that no longer exists. `Runtime.registered_pause_shortcut`, `is_pause_shortcut`, the handler
+dispatch and the registration block are all gone; the global-shortcut handler is back to one
+registered chord (the region one) and the probe-ordering subtlety named below is therefore moot
+again, though the comment explaining it survives in the code as a warning for the next person who
+adds a second chord.
+
+`Cmd+Shift+P`, an ordinary chord. It goes through the existing Carbon
 `RegisterEventHotKey` path — no `CGEventTap`, no TCC prompt, and it keeps working while Spotify
 owns the media keys. It reuses `apply_shortcut_with` unchanged, pointed at a second ground-truth
 slot (`Runtime.registered_pause_shortcut`), so it inherits the rollback and the media-key screen
@@ -179,7 +198,14 @@ press could have falsely "confirmed" a region chord that is in fact shadowed by 
 turning the one honest confirmation mechanism into a liar. The handler therefore dispatches on the
 fired chord *before* the probe check.
 
-**Settings.** `pause_shortcut` is persisted alongside `region_shortcut`, and the media-key screen
+**Settings. — REMOVED, see the banner at the top.** `pause_shortcut` is no longer a field.
+`Settings::normalize`'s media-key screen has been folded back inline on `region_shortcut`, which
+is the only persisted shortcut again. The migration guard runs the other way now: a
+`settings.json` that still *carries* a `pause_shortcut` key must load cleanly and leave every
+other value intact — serde ignores it because `Settings` has no `deny_unknown_fields`, and
+`a_settings_file_still_carrying_the_retired_pause_shortcut_loads_untouched` pins that.
+
+`pause_shortcut` is persisted alongside `region_shortcut`, and the media-key screen
 in `Settings::normalize` was generalised to run over both fields rather than just the region one.
 The container-level `#[serde(default)]` means the owner's existing `settings.json` — which has no
 `pause_shortcut` key — loads untouched, with his shortcut, voice and speed intact; there is a test
@@ -231,6 +257,11 @@ Honest list. None of them is a reason to revert Phase 1, but two are worth the o
    — the same trade the `⌘⇧A` Service shortcut already makes, and documented in the README. There
    is no settings UI to rebind it yet, which makes this sharper than it would otherwise be. **If
    this bites, the fix is the settings row, not a different default.**
+
+   **Resolved 2026-08-10 — by removal, not by a settings row.** It bit, and by then the premise
+   had changed: `⌘⇧A` had become a selection-aware play/pause toggle, so the chord was no longer
+   buying a capability, only a second way to reach one. Building a settings row to rebind
+   redundant surface would have been the wrong fix. The chord is gone.
 2. **The tray label is refreshed at four call sites.** They all funnel through one helper that
    reads ground truth, so none can render a stale value — but a *fifth* mutation path added later
    and not wired up would show a stale label. The state itself cannot drift (it lives in the

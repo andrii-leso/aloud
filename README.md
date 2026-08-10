@@ -37,26 +37,33 @@ you happen to select the identical words somewhere else, Aloud reads that
 as the same text and toggles rather than restarting; there is no way for
 it to tell those apart, and guessing would be worse.
 
-While Aloud is speaking, **Cmd+Shift+P** pauses and resumes it, as does
-the tray's **Pause** / **Resume** item. This is a true pause: playback
-halts mid-sentence and continues from the exact sample, with nothing
-re-read and nothing already synthesised thrown away. Pressing it while
-nothing is speaking does nothing. `Cmd+Shift+A`'s toggle is the same
-pause, reached differently — the tray item reads **Resume** whichever one
-paused it.
+That pause is a true pause: playback halts mid-sentence and continues
+from the exact sample, with nothing re-read and nothing already
+synthesised thrown away.
 
-It is an ordinary chord, not the keyboard's play/pause **media** key.
-That is deliberate and permanent: media keys are the only path in
-`global-hotkey` that creates a `CGEventTap`, and an active tap from an
-untrusted process is refused outright — measured on this machine, macOS
-26.6 (`docs/media-key-control-research.md` §4). Aloud never asks for
+The tray's **Pause** / **Resume** item does the same thing, and it is
+there for the case the key cannot cover. `Cmd+Shift+A` reaches Aloud as a
+macOS Service, and macOS does not invoke a Service with nothing selected
+— so if you have clicked away and lost the selection, the tray item is
+how you pause. It reads **Resume** exactly while playback is paused,
+whichever of the two paused it.
+
+There is no separate pause chord. There was one, `Cmd+Shift+P`, before
+`Cmd+Shift+A` became a toggle; it was removed as redundant — and it
+collided with VS Code's Command Palette, which a global hotkey wins while
+Aloud is running.
+
+Aloud binds no **media** keys, here or anywhere. That is deliberate and
+permanent: media keys are the only path in `global-hotkey` that creates a
+`CGEventTap`, and an active tap from an untrusted process is refused
+outright — measured on this machine, macOS 26.6
+(`docs/media-key-control-research.md` §4). Aloud never asks for
 Accessibility, so it never takes that route. A side benefit is that
-pause keeps working while Spotify or Music has the media keys.
+Aloud's keys keep working while Spotify or Music has the media keys.
 
-Both the region shortcut and the voice/speed the app reads with are
+The region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
-below. The pause chord is not yet rebindable in that window; it is read
-from `pause_shortcut` in `settings.json`.
+below.
 
 Cmd+Shift+A is Aloud's default shortcut for the Service, shipped in
 `Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
@@ -72,7 +79,7 @@ open one yourself. Use the tray icon to trigger a region read, pause or
 resume it, stop whatever is currently speaking, open **Settings…**, or
 quit. The Pause item names what the click will do, not the state it is
 in: it reads **Resume** exactly while playback is paused, whether it was
-`Cmd+Shift+P`, `Cmd+Shift+A` or the item itself that paused it.
+`Cmd+Shift+A` or the item itself that paused it.
 
 ## Permissions
 
