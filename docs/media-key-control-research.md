@@ -354,9 +354,19 @@ worse than not having the feature.
 
 **4. The cheap alternative, and the suggested order.** ✅ **Done 2026-08-10 (Phase 1)** — the
 audio-layer work, the stall-guard fix, the ordinary hotkey and the tray item all shipped; see
-[`2026-08-10-pause-resume-phase1.md`](2026-08-10-pause-resume-phase1.md). The
-`MPRemoteCommandCenter` step below remains open and still gated on the §2 hand-back test. Original
-recommendation follows. Do the §5 audio-layer pause/resume first —
+[`2026-08-10-pause-resume-phase1.md`](2026-08-10-pause-resume-phase1.md).
+
+> **CORRECTED 2026-08-10 — the sentence that stood here is no longer true.** It read: *"The
+> `MPRemoteCommandCenter` step below remains open and still gated on the §2 hand-back test."*
+> It was written in the hours between Phase 1 shipping and Phase 2 being built, and it was
+> overtaken the same day. **The step was taken and the answer came back bad:** Phase 2 was built,
+> the owner ran the §2 test by hand, control never returned to Music.app when a read ended, and
+> the media key was **dropped**. Nothing below this line is an open plan — read the top banner,
+> §2's RESOLVED note and `CLAUDE.md` constraint 15(a) before acting on any of it. One further
+> dating, for a reader who lands here first: the ordinary chord in the ✅ line above was `⌘⇧P`,
+> and it too was removed the same day (see §5's note). Pause is `⌘⇧A` and the tray item.
+
+Original recommendation follows. Do the §5 audio-layer pause/resume first —
 it is required by every option, carries no platform risk, and includes a real latent bug (the 30s
 stall guard aborting any paused read). Ship it behind an ordinary global hotkey plus a tray
 Pause/Resume item: no new framework, no TCC, no Now Playing arbitration, and it keeps working while

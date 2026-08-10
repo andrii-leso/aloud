@@ -149,6 +149,51 @@ fn speed_is_clamped_on_load_and_on_save() {
 }
 
 #[test]
+fn an_empty_region_shortcut_falls_back_to_the_default() {
+    // `normalize`'s empty-string branch. It used to live in a shared
+    // `normalize_shortcut` helper covering both persisted chords, and was
+    // asserted through the pause field
+    // (`an_empty_pause_shortcut_falls_back_to_the_default`). When the pause
+    // chord was retired the helper was folded back inline onto
+    // `region_shortcut` and that test went with the field — but the branch
+    // did not go anywhere. It still runs on every load and every save, and
+    // it was left unasserted.
+    //
+    // Nothing in the app can produce an empty value: `set_shortcut` only
+    // ever persists what `Chord::to_accelerator` returned. A hand-edited or
+    // truncated settings.json can, and this branch is what stops it
+    // persisting. There is a second, independent guard downstream — a
+    // failed `register()` at startup falls back to the default — but that
+    // one recovers the *session* and leaves the file broken, so it re-runs
+    // on every launch. This is the one that repairs the value.
+    for raw in [
+        br#"{"region_shortcut":""}"#.to_vec(),
+        br#"{"region_shortcut":"   "}"#.to_vec(),
+    ] {
+        let d = tmpdir("empty-region");
+        fs::write(d.join("settings.json"), &raw).unwrap();
+        assert_eq!(
+            Settings::load(&d).region_shortcut,
+            DEFAULT_SHORTCUT,
+            "an empty region shortcut must be replaced by the default on load"
+        );
+    }
+
+    // And on save, asserted on the raw file: load() normalizes too, so a
+    // load-based assertion would pass even with the write side broken.
+    let d = tmpdir("empty-region-save");
+    Settings {
+        region_shortcut: "  ".into(),
+        ..Settings::default()
+    }
+    .save(&d)
+    .unwrap();
+    let raw = fs::read_to_string(d.join("settings.json")).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(written["region_shortcut"], DEFAULT_SHORTCUT);
+}
+
+#[test]
 fn a_media_key_shortcut_in_a_hand_edited_file_does_not_survive_a_load() {
     // The only path by which a media key could reach
     // `global_shortcut().register()` — which routes into

@@ -11,6 +11,17 @@ Scope was Phase 1 only: **no media key, no `MPRemoteCommandCenter`, no `objc2-me
 Nothing in this change set touches that decision, and the research doc's §2 hand-back test is
 still unrun.
 
+> **UPDATE, 2026-08-10 — the §2 hand-back test is no longer unrun, and the media key is dead.**
+> The scope sentence above is still an accurate description of *this* change set: Phase 1 added no
+> media key. But "still unrun" was overtaken hours later. Phase 2 built the
+> `MPRemoteCommandCenter` route (F8 → `toggle_pause`, `objc2-media-player` 0.3.2), and it cleared
+> every programmatic check — then the owner pressed the key, and **when a read ended control never
+> returned to Music.app**, which is the one failure §2 named as decisive. The feature was
+> **dropped, not shipped**: on `main` Aloud binds no media key by any mechanism. The work is
+> preserved, unmerged, at tag `experiment/media-key-mpremote` (parent `00d044f`). See
+> [`media-key-control-research.md`](media-key-control-research.md)'s top banner and `CLAUDE.md`
+> constraint 15(a).
+
 > **PARTIALLY SUPERSEDED, 2026-08-10 — the `⌘⇧P` chord was removed.** Everything below about the
 > audio layer stands: the `Pausable` mechanism, the pause-aware stall watchdog, the `audible`
 > predicate, the bounded-append fix, the tray item. Only the **separate global hotkey** is gone,
