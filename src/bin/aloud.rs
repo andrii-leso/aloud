@@ -407,6 +407,7 @@ fn probe_consumed(app: &tauri::AppHandle, _shortcut: &Shortcut) -> bool {
 
 /// `"CmdOrCtrl+Shift+R"` → `"⌘⇧R"`. Display only — the canonical form
 /// stays the plugin's string.
+#[cfg(not(target_os = "windows"))]
 fn pretty_accelerator(accel: &str) -> String {
     let mut out = String::new();
     let mut key = "";
@@ -421,6 +422,46 @@ fn pretty_accelerator(accel: &str) -> String {
     }
     out.push_str(key);
     out
+}
+
+/// `"CmdOrCtrl+Shift+R"` → `"Ctrl+Shift+R"`. Display only.
+///
+/// Windows has no ⌘ key and does not use glyph accelerators — the platform
+/// convention is spelled-out words joined by `+`. Rendering the macOS glyphs
+/// here told the user to press a key their keyboard does not have.
+///
+/// `CmdOrCtrl` is the *cross-platform* token and resolves to Control here, so
+/// it maps to `Ctrl`. A literal `Cmd`/`Super`/`Meta` is the Windows key and is
+/// spelled `Win` — the two must not collapse, or a chord the user cannot press
+/// would be displayed as one they can.
+#[cfg(target_os = "windows")]
+fn pretty_accelerator(accel: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut key = "";
+    for part in accel.split('+') {
+        let name = match part.to_ascii_lowercase().as_str() {
+            "cmdorctrl" | "control" | "ctrl" => "Ctrl",
+            "cmd" | "command" | "super" | "meta" => "Win",
+            "alt" | "option" => "Alt",
+            "shift" => "Shift",
+            _ => {
+                key = part;
+                continue;
+            }
+        };
+        // `CmdOrCtrl+Control` is degenerate here — the glyph rendering keeps
+        // ⌘ and ⌃ distinct, but on Windows both collapse to Ctrl and a naive
+        // push emits "Ctrl+…+Ctrl".
+        if !parts.contains(&name) {
+            parts.push(name);
+        }
+    }
+    // A missing or empty key renders as nothing, never a placeholder and never
+    // a dangling separator — the same contract the macOS arm's tests pin down.
+    if !key.is_empty() {
+        parts.push(key);
+    }
+    parts.join("+")
 }
 
 /// Everything the settings page needs on load.
@@ -1005,6 +1046,7 @@ fn main() {
             // resumes the selection it started (see `App::speak_selection`), and
             // a label that still said only "Read" would understate what the one
             // control the user reaches for most actually does.
+            #[cfg(not(target_os = "windows"))]
             let read_selection_item = MenuItem::with_id(
                 app,
                 "read_selection_info",
@@ -1013,14 +1055,46 @@ fn main() {
                 None::<&str>,
             )?;
 
+            // Windows has no Services menu and no system-mediated selection
+            // channel at all, so there is no chord to name and nothing the user
+            // could go and assign. Naming ⌘⇧A here told a Windows user to press
+            // a key their keyboard does not have, for a feature that is not in
+            // this build. Same rule as `UnsupportedLoginItem`: present and
+            // honest beats absent, and beats a control that lies.
+            #[cfg(target_os = "windows")]
+            let read_selection_item = MenuItem::with_id(
+                app,
+                "read_selection_info",
+                "Read Selection  (not available in this build)",
+                false,
+                None::<&str>,
+            )?;
+
             // The selection shortcut is a macOS Service, so it can only be changed
             // in System Settings. This opens the exact pane instead of describing
             // where it is.
+            #[cfg(not(target_os = "windows"))]
             let services_settings_item = MenuItem::with_id(
                 app,
                 "services_settings",
                 "Change Selection Shortcut…",
                 true,
+                None::<&str>,
+            )?;
+
+            // Disabled on Windows. `open_system_shortcuts_pane` shells out to the
+            // macOS `open` binary with an `x-apple.systempreferences:` URL, which
+            // does not exist here — and the caller swallows the error into a log
+            // line, so the item rendered ENABLED, was clickable, and silently did
+            // nothing. There is also no pane to open: the selection mechanism is
+            // designed (UI Automation) but not built. Hard constraint 12 — a
+            // control shows what is true, never what was requested.
+            #[cfg(target_os = "windows")]
+            let services_settings_item = MenuItem::with_id(
+                app,
+                "services_settings",
+                "Change Selection Shortcut…",
+                false,
                 None::<&str>,
             )?;
             let separator2 = PredefinedMenuItem::separator(app)?;
@@ -1439,7 +1513,11 @@ mod run_event_tests {
 /// side, since Task 6 extends `pretty_accelerator` to render arbitrary
 /// user-entered chords and a careless edit here would otherwise go
 /// uncaught until someone noticed a wrong glyph on screen.
-#[cfg(test)]
+/// The glyph rendering is macOS-only. Windows spells modifiers out, so these
+/// assertions are gated rather than changed — the macOS behaviour they pin
+/// down is unaltered, and `windows_accelerator_tests` below mirrors every case
+/// for the other arm so neither platform loses coverage.
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::pretty_accelerator;
 
@@ -1498,6 +1576,80 @@ mod tests {
     #[test]
     fn modifiers_only_with_no_key_renders_just_the_modifiers() {
         assert_eq!(pretty_accelerator("Shift"), "⇧");
+    }
+}
+
+/// The Windows arm of `pretty_accelerator`, case for case against `tests`
+/// above. Windows has no ⌘ key and does not use glyph accelerators — the
+/// platform convention is spelled-out words joined by `+` — so the *rendering*
+/// differs while the *contract* (order preserved, key casing untouched,
+/// malformed input never panics and never grows a placeholder) is identical.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_accelerator_tests {
+    use super::pretty_accelerator;
+
+    #[test]
+    fn default_region_shortcut_renders_as_the_shipped_menu_string() {
+        // The string a Windows user actually sees in the tray. `CmdOrCtrl`
+        // resolves to Control on this platform, so it must render Ctrl — the
+        // glyph form told them to press a key their keyboard does not have.
+        assert_eq!(pretty_accelerator("CmdOrCtrl+Shift+R"), "Ctrl+Shift+R");
+    }
+
+    #[test]
+    fn all_four_modifiers_render_in_the_order_to_accelerator_emits_them() {
+        // Same fixed order as `Chord::to_accelerator`. Note `CmdOrCtrl` and
+        // `Control` BOTH mean Ctrl here, where macOS renders them as distinct
+        // glyphs (⌘ and ⌃) — so the duplicate is collapsed rather than emitted
+        // twice. This exact input produced "Ctrl+Alt+Ctrl+Shift+R" before the
+        // dedup landed.
+        assert_eq!(
+            pretty_accelerator("CmdOrCtrl+Alt+Control+Shift+R"),
+            "Ctrl+Alt+Shift+R"
+        );
+    }
+
+    /// A literal Cmd/Super/Meta is the WINDOWS key, not Control. Collapsing it
+    /// into Ctrl would display a chord the user can press in place of one they
+    /// cannot — the opposite of the bug this whole split fixes.
+    #[test]
+    fn the_meta_key_is_win_not_ctrl() {
+        assert_eq!(pretty_accelerator("Super+Shift+R"), "Win+Shift+R");
+        assert_eq!(pretty_accelerator("Meta+R"), "Win+R");
+    }
+
+    #[test]
+    fn multi_character_key_tokens_keep_their_original_casing() {
+        assert_eq!(
+            pretty_accelerator("CmdOrCtrl+Shift+ArrowUp"),
+            "Ctrl+Shift+ArrowUp"
+        );
+        assert_eq!(pretty_accelerator("Alt+F7"), "Alt+F7");
+    }
+
+    #[test]
+    fn modifier_matching_is_case_insensitive_but_the_key_is_passed_through_as_is() {
+        assert_eq!(pretty_accelerator("cmdorctrl+shift+r"), "Ctrl+Shift+r");
+    }
+
+    // Same malformed-input contract as the macOS arm: modifiers found are
+    // still rendered, and a missing or empty key renders as nothing — not a
+    // placeholder, not an error, and (the Windows-specific trap) not a
+    // dangling "+". The naive `parts.push(key); parts.join("+")` produced
+    // "Ctrl+" and "Shift+" for the last two.
+    #[test]
+    fn empty_input_yields_an_empty_string() {
+        assert_eq!(pretty_accelerator(""), "");
+    }
+
+    #[test]
+    fn trailing_separator_with_no_key_drops_the_key_silently() {
+        assert_eq!(pretty_accelerator("CmdOrCtrl+"), "Ctrl");
+    }
+
+    #[test]
+    fn modifiers_only_with_no_key_renders_just_the_modifiers() {
+        assert_eq!(pretty_accelerator("Shift"), "Shift");
     }
 }
 
@@ -1692,6 +1844,16 @@ mod command_tests {
         res.deserialize().unwrap()
     }
 
+    /// `DEFAULT_SHORTCUT` as the settings window renders it. Split for the
+    /// same reason `pretty_accelerator` is: macOS uses glyphs, Windows spells
+    /// the modifiers out. Kept as a literal rather than a call to
+    /// `pretty_accelerator` so the assertion still pins the expected output
+    /// instead of testing the function against itself.
+    #[cfg(not(target_os = "windows"))]
+    const DEFAULT_SHORTCUT_PRETTY: &str = "⌘⇧R";
+    #[cfg(target_os = "windows")]
+    const DEFAULT_SHORTCUT_PRETTY: &str = "Ctrl+Shift+R";
+
     #[test]
     fn get_settings_returns_the_expected_shape() {
         let dir = throwaway_dir("get");
@@ -1702,7 +1864,7 @@ mod command_tests {
         });
 
         assert_eq!(value["region_shortcut"], "CmdOrCtrl+Shift+R");
-        assert_eq!(value["region_shortcut_pretty"], "⌘⇧R");
+        assert_eq!(value["region_shortcut_pretty"], DEFAULT_SHORTCUT_PRETTY);
         assert_eq!(value["voice"], "F5");
         assert_eq!(value["speed"], 1.0);
 
@@ -1727,7 +1889,7 @@ mod command_tests {
         });
 
         assert_eq!(value["region_shortcut"], "CmdOrCtrl+Shift+R");
-        assert_eq!(value["region_shortcut_pretty"], "⌘⇧R");
+        assert_eq!(value["region_shortcut_pretty"], DEFAULT_SHORTCUT_PRETTY);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
