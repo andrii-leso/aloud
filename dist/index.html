@@ -23,11 +23,16 @@
          at 480px: 610px plain, 663px with the note showing. Those absolutes
          run a line under the figures in aloud.rs, which were taken in the
          real WKWebView — trust the delta, not the number.) -->
-    <p class="hint">
+    <!-- Both paragraphs and the button are rewritten by settings.js when
+         `selection_supported` comes back false (Windows), where every word
+         below is untrue: there is no Services menu, no ⌘ key, and no pane to
+         open. The macOS text stays the markup default so the page is correct
+         if that one call ever fails. -->
+    <p class="hint" id="selection-hint">
       Select text and press <kbd>⌘⇧A</kbd>, or use the Services menu. Press
       again to pause or resume; select different text to read that instead.
     </p>
-    <p class="hint muted">
+    <p class="hint muted" id="selection-note">
       This one belongs to macOS, not to Aloud: it is a system Service, so it
       can only be changed in System Settings.
     </p>

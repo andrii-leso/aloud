@@ -4,6 +4,20 @@
 //! one shared `Player`), and exposes tray items for both actions plus
 //! Stop.
 
+// Without this, Windows gives a console-subsystem binary a console window, and
+// Aloud — a tray app with no main window — launches with a stray black
+// rectangle sitting on the desktop for its whole lifetime. `dumpbin /headers`
+// reported `3 subsystem (Windows CUI)` before this line.
+//
+// Gated on `not(debug_assertions)` so a debug build keeps its console and
+// `eprintln!` still reaches a terminal. In release the log file is the
+// diagnostic channel (`src/log.rs`) — `eprintln!` from a GUI-subsystem process
+// goes nowhere at all, which is exactly why that file exists.
+//
+// Crate-level, so it applies to this binary only: `src/bin/aloud_say.rs` is a
+// CLI and must stay on the console subsystem.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use aloud::app::actions::Outcome;
 use aloud::app::{App, SelectionOutcome};
 use aloud::login_item::{LoginItemService, LoginItemStatus};
@@ -774,6 +788,26 @@ fn open_services_settings() {
     }
 }
 
+/// Whether this build can read the current selection at all.
+///
+/// On macOS the OS hands Aloud the selected text through a system Service. On
+/// Windows there is no equivalent channel — `src/selection/windows.rs` is a
+/// deliberate stub — so the Read Selection section is inert, there is no
+/// shortcut to change, and there is no pane to open either:
+/// `open_system_shortcuts_pane` runs the macOS `open` binary with an
+/// `x-apple.systempreferences:` URL, and its caller swallows the failure into a
+/// log line. The button therefore rendered clickable, was clickable, and did
+/// nothing anywhere the user could see.
+///
+/// The page asks rather than sniffing the platform itself, for the same reason
+/// `get_login_item_status` exists: a control must render what is true, not what
+/// the page assumes (hard constraint 12). `8a0732e` disabled the equivalent
+/// tray item; this is the settings-window half of that same defect.
+#[tauri::command]
+fn selection_supported() -> bool {
+    !cfg!(target_os = "windows")
+}
+
 /// The live `SMAppService` handle, in managed state so the two
 /// launch-at-login commands can be driven by a fake in tests (they take
 /// only `State`, never `AppHandle` — see `command_tests`).
@@ -989,6 +1023,7 @@ fn main() {
             set_voice,
             set_speed,
             open_services_settings,
+            selection_supported,
             begin_probe,
             end_probe,
             get_login_item_status,
@@ -1660,6 +1695,31 @@ mod windows_accelerator_tests {
 /// label is only ever produced here, and only ever from
 /// `App::is_paused()` (see `refresh_pause_label`), so this is the whole
 /// truthfulness surface.
+/// Split by platform rather than written as
+/// `assert_eq!(selection_supported(), !cfg!(target_os = "windows"))`, which
+/// would only be testing the function against its own implementation. Each
+/// arm pins the concrete expected answer, the same way the accelerator tests
+/// do.
+#[cfg(test)]
+mod selection_support_tests {
+    use super::selection_supported;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_has_no_selection_channel() {
+        assert!(
+            !selection_supported(),
+            "the settings page renders Read Selection as live off this"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn the_macos_service_is_a_selection_channel() {
+        assert!(selection_supported());
+    }
+}
+
 #[cfg(test)]
 mod pause_label_tests {
     use super::pause_label;
@@ -1842,6 +1902,31 @@ mod command_tests {
         let res = get_ipc_response(&webview, request("get_settings", serde_json::json!({})))
             .expect("get_settings should succeed under the real capabilities ACL");
         res.deserialize().unwrap()
+    }
+
+    /// `selection_supported` through the real IPC pipeline, not just as a
+    /// plain call: the settings page reaches it by name, so what matters is
+    /// that it is registered in `generate_handler!` and serializes to a bare
+    /// bool. A command that exists but was never wired up fails exactly here
+    /// and nowhere else — and on the page it would surface as the section
+    /// silently keeping its macOS text.
+    #[test]
+    fn selection_supported_is_reachable_over_ipc() {
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![selection_supported])
+            .build(mock_context(noop_assets()))
+            .expect("failed to build mock app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("MockRuntime can build a webview headlessly");
+
+        let res = get_ipc_response(
+            &webview,
+            request("selection_supported", serde_json::json!({})),
+        )
+        .expect("selection_supported should succeed under the real capabilities ACL");
+        let value: bool = res.deserialize().unwrap();
+        assert_eq!(value, !cfg!(target_os = "windows"));
     }
 
     /// `DEFAULT_SHORTCUT` as the settings window renders it. Split for the

@@ -189,9 +189,34 @@ window.addEventListener("keydown", async (e) => {
   }
 });
 
-document.getElementById("open-services").addEventListener("click", () => {
+const openServices = document.getElementById("open-services");
+
+openServices.addEventListener("click", () => {
   invoke("open_services_settings");
 });
+
+// Renders the Read Selection section from what the build can actually do.
+//
+// On Windows nothing in that section is true: there is no Services menu, no
+// ⌘ key to press, and `open_services_settings` shells out to the macOS `open`
+// binary and swallows the failure into a log line — so the button was
+// clickable, was clicked, and did nothing the user could see. That is the same
+// defect the tray menu had (8a0732e), and the same rule applies: a control
+// shows what is true, never what was requested (hard constraint 12).
+//
+// Disabled rather than hidden, per the UnsupportedLoginItem precedent —
+// present and honest beats absent, and both beat a control that lies. The
+// Login Items button next to the launch-at-login checkbox is hidden instead
+// because it is a fix-affordance for specific recoverable states, not a
+// permanent control of its section; this one is.
+function showSelectionSupport(supported) {
+  if (supported) return;
+  document.getElementById("selection-hint").textContent =
+    "Reading the current selection is not available in this build.";
+  document.getElementById("selection-note").textContent =
+    "It needs a system-mediated selection channel, which Windows does not have.";
+  openServices.disabled = true;
+}
 
 // The voice the user most recently asked for. A swap takes ~1.4s on a
 // background thread, so two quick clicks put two swaps in flight and the
@@ -355,6 +380,7 @@ openLoginItems.addEventListener("click", () => {
   // Deliberately a second call, not a field on get_settings: this one
   // reads live OS state, while get_settings reads what Aloud saved.
   showLoginItem(await invoke("get_login_item_status"));
+  showSelectionSupport(await invoke("selection_supported"));
 })().catch((err) => {
   // Everything on this page is populated by that one call. Without a
   // catch, a failure leaves index.html's hardcoded ⌘⇧R on the button, an
