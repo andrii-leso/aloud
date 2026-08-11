@@ -103,6 +103,10 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
+    # Added on the PC during M6 for the region overlay: GetModuleHandleW, whose
+    # HMODULE becomes the HINSTANCE that RegisterClassExW/CreateWindowExW want.
+    # This one DOES surface as a plain unresolved import if it is missing.
+    "Win32_System_LibraryLoader",
     # Added on the PC during M6. NOT optional, and it does not surface as an
     # unresolved import: every `BitmapDecoder::Create*Async` is
     # `#[cfg(feature = "Storage_Streams")]` in windows 0.61.3, so without it

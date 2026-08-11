@@ -1,15 +1,25 @@
-//! Windows region capture — **stub, body not implemented.**
+//! Windows region capture.
 //!
-//! Written on macOS as part of the M6 preparation pass, so the PC fills in
-//! bodies rather than inventing structure. It deliberately references no
-//! WinRT/Win32 type: WinRT bindings do not compile on macOS (hard constraint
-//! 7), so anything that needed one could not have been typechecked before
-//! being handed over. Everything below that *is* a Windows fact lives in the
-//! doc comments, sourced from `docs/M6-platform-research-windows.md`.
+//! The structure was written on macOS during the M6 preparation pass and the
+//! bodies were filled in on the PC — WinRT bindings do not compile on macOS
+//! (hard constraint 7), so no Windows call in here could be typechecked before
+//! it reached this machine.
+//!
+//! This file is the thin half: the trait impl, the temp-file contract and the
+//! PNG encode. The interactive UI — the per-monitor overlay windows, the drag,
+//! Escape, and the `BitBlt` — lives in [`overlay`].
 
 use super::RegionSelector;
-use anyhow::{bail, Result};
-use std::path::PathBuf;
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use ::windows::Graphics::Imaging::{BitmapAlphaMode, BitmapEncoder, BitmapPixelFormat};
+use ::windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+use ::windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+
+mod overlay;
 
 /// Interactive rectangle capture on Windows.
 ///
@@ -85,6 +95,241 @@ impl RegionSelector for ScreenCapture {
     /// directory — a photograph of the user's screen — and the caller owns
     /// deleting it on every path including error paths.
     fn select(&self) -> Result<Option<PathBuf>> {
-        bail!("region capture is not implemented on Windows yet")
+        crate::log_line!("capture: starting the region overlay thread");
+
+        // The overlay's windows must be pumped on the thread that created
+        // them, so they get a thread of their own with its own `GetMessage`
+        // loop, and this call blocks on `join()`. That keeps `select()` the
+        // plain blocking function the trait already describes — no async, no
+        // cross-thread dance, and no Win32 handle above this seam.
+        //
+        // `join()` is used rather than a channel because it turns a panic on
+        // that thread into an `Err` here for free. No `stack_size`: a Win32
+        // pump re-enters the WndProc through DWM, IME and shell hooks, and a
+        // guard-page hit on Windows *aborts the process* rather than
+        // surfacing as the `Err` this relies on.
+        let handle = std::thread::Builder::new()
+            .name("aloud-region-overlay".into())
+            .spawn(overlay::run)
+            .context("failed to spawn the region overlay thread")?;
+
+        let selection = match handle.join() {
+            Ok(inner) => inner?,
+            Err(_) => bail!("the region overlay thread panicked"),
+        };
+
+        // The only place `Ok(None)` is produced. Everything upstream of here
+        // that goes wrong is an `Err`, and the two never meet: a cancel is a
+        // decision taken in the WndProc, a failure is an error returned from a
+        // Win32 call.
+        let Some(sel) = selection else {
+            crate::log_line!("capture: the overlay was cancelled by the user");
+            return Ok(None);
+        };
+
+        crate::log_line!(
+            "capture: committed {}x{} at ({},{}) in virtual-desktop pixels",
+            sel.width,
+            sel.height,
+            sel.origin_x,
+            sel.origin_y
+        );
+        if looks_protected(&sel.bgra) {
+            crate::log_line!(
+                "capture: the region came back entirely black — this is normal for DRM and \
+                 protected windows (WDA_EXCLUDEFROMCAPTURE), not a permission problem"
+            );
+        }
+
+        let path = unique_capture_path();
+        if let Err(e) = write_png(&path, &sel) {
+            // A screenshot must never be left half-written in the temp
+            // directory. The trait makes the *caller* the owner of the path in
+            // `Ok(Some(path))`; on this path there is no path to hand over, so
+            // nobody else can clean it up.
+            let _ = std::fs::remove_file(&path);
+            return Err(e).context("failed to write the captured region as PNG");
+        }
+        Ok(Some(path))
+    }
+}
+
+/// Every pixel exactly black — the signature of a capture that hit
+/// `WDA_EXCLUDEFROMCAPTURE`. Alpha is ignored because `BitBlt` does not write
+/// a meaningful one. A genuinely all-black region reads the same and is
+/// equally worth a log line, so there is no false positive worth caring about.
+fn looks_protected(bgra: &[u8]) -> bool {
+    bgra.chunks_exact(4)
+        .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
+}
+
+/// Puts a **freshly spawned** thread in the MTA for the life of the guard.
+///
+/// Simpler than `ocr::windows::Mta` on purpose: the only caller spawns the
+/// thread immediately before entering, so it has never touched COM,
+/// `RPC_E_CHANGED_MODE` cannot occur, and the apartment is unambiguously ours
+/// to uninitialise. `RoUninitialize` on an apartment we did not create is
+/// windows-rs#1169 — it unloads COM under whoever did.
+struct OwnedMta;
+
+impl OwnedMta {
+    fn enter() -> Result<Self> {
+        unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
+            .context("RoInitialize(RO_INIT_MULTITHREADED) failed on the PNG encoder thread")?;
+        Ok(Self)
+    }
+}
+
+impl Drop for OwnedMta {
+    fn drop(&mut self) {
+        unsafe { RoUninitialize() };
+    }
+}
+
+/// Encodes the captured pixels as a PNG at `path`.
+///
+/// Uses WinRT's `BitmapEncoder` — the mirror of the `BitmapDecoder` path
+/// `src/ocr/windows.rs` already takes — rather than declaring a PNG crate.
+/// `image` and `png` are both in `Cargo.lock`, but only transitively via
+/// tauri, and Rust will not let this crate name a dependency it does not
+/// declare. `Graphics_Imaging` and `Storage_Streams` are already enabled for
+/// the OCR half, so this costs no new dependency and no new feature.
+fn write_png(path: &Path, sel: &overlay::Selection) -> Result<()> {
+    // The WinRT half runs on its own thread, always. `IAsyncOperation::get()`
+    // blocks on `WaitForSingleObject(INFINITE)` with no message pump, which is
+    // a permanent deadlock on an STA — and `select()` is reachable from
+    // whatever thread the region flow happens to be on. A brand-new thread is
+    // apartment-free, so `RO_INIT_MULTITHREADED` always succeeds there. Same
+    // reasoning and same shape as `ocr::windows::WindowsOcr::recognise`.
+    let joined = std::thread::scope(|scope| scope.spawn(|| encode_png(path, sel)).join());
+    match joined {
+        Ok(inner) => inner,
+        Err(_) => bail!("the PNG encoder thread panicked"),
+    }
+}
+
+fn encode_png(path: &Path, sel: &overlay::Selection) -> Result<()> {
+    let _mta = OwnedMta::enter()?;
+
+    // `BitBlt` writes BGRX and that fourth byte is **not** a valid alpha — it
+    // comes back as zero. Handing it over as-is produces a fully transparent
+    // PNG and OCR silently recognises nothing. `BitmapAlphaMode::Ignore` says
+    // there is no alpha here; forcing the byte to 0xFF makes that true
+    // byte-for-byte rather than trusting the encoder to honour the hint.
+    let mut pixels = sel.bgra.clone();
+    for px in pixels.chunks_exact_mut(4) {
+        px[3] = 0xFF;
+    }
+
+    let stream =
+        InMemoryRandomAccessStream::new().context("InMemoryRandomAccessStream::new failed")?;
+    let encoder = BitmapEncoder::CreateAsync(
+        BitmapEncoder::PngEncoderId().context("BitmapEncoder::PngEncoderId failed")?,
+        &stream,
+    )
+    .context("BitmapEncoder::CreateAsync failed to start")?
+    .get()
+    .context("BitmapEncoder::CreateAsync failed")?;
+
+    encoder
+        .SetPixelData(
+            BitmapPixelFormat::Bgra8,
+            BitmapAlphaMode::Ignore,
+            sel.width as u32,
+            sel.height as u32,
+            96.0,
+            96.0,
+            &pixels,
+        )
+        .context("BitmapEncoder::SetPixelData failed")?;
+    encoder
+        .FlushAsync()
+        .context("BitmapEncoder::FlushAsync failed to start")?
+        .get()
+        .context("BitmapEncoder::FlushAsync failed")?;
+
+    // Pull the encoded bytes back out and write them with plain std::fs, so
+    // the file is created and closed by Rust and there is no WinRT file handle
+    // left open when the caller's delete-on-drop runs.
+    let size = stream
+        .Size()
+        .context("the encoded PNG stream reported no size")?;
+    let len = u32::try_from(size).context("the encoded PNG is implausibly large")?;
+    let input = stream
+        .GetInputStreamAt(0)
+        .context("rewinding the encoded PNG stream failed")?;
+    let reader =
+        DataReader::CreateDataReader(&input).context("DataReader::CreateDataReader failed")?;
+    reader
+        .LoadAsync(len)
+        .context("DataReader::LoadAsync failed to start")?
+        .get()
+        .context("reading the encoded PNG back failed")?;
+    let mut bytes = vec![0u8; len as usize];
+    reader
+        .ReadBytes(&mut bytes)
+        .context("DataReader::ReadBytes failed")?;
+
+    std::fs::write(path, &bytes).with_context(|| format!("writing {} failed", path.display()))?;
+    crate::log_line!("capture: wrote {} ({} bytes)", path.display(), bytes.len());
+    Ok(())
+}
+
+/// Builds a fresh, unique path under the OS temp directory for one capture.
+///
+/// Never a fixed name: it would race a double hotkey press, and it would let a
+/// stale capture from a previous run be mistaken for a fresh one.
+///
+/// This is a deliberate duplication of `capture::macos`'s function of the same
+/// name, not an oversight — hoisting it into `capture::mod` would touch the
+/// working macOS arm and its four tests for twelve lines.
+fn unique_capture_path() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "aloud-capture-{}-{nanos}-{n}.png",
+        std::process::id()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_capture_path_never_repeats() {
+        assert_ne!(unique_capture_path(), unique_capture_path());
+    }
+
+    #[test]
+    fn unique_capture_path_is_a_png_in_the_temp_dir() {
+        let p = unique_capture_path();
+        assert!(p.starts_with(std::env::temp_dir()), "{}", p.display());
+        assert_eq!(p.extension().and_then(|e| e.to_str()), Some("png"));
+    }
+
+    #[test]
+    fn an_all_black_region_is_flagged_as_protected() {
+        assert!(looks_protected(&[0u8; 4 * 6]));
+    }
+
+    /// Only the colour channels count: `BitBlt` leaves the fourth byte
+    /// undefined, so an opaque-looking alpha must not make a black region read
+    /// as ordinary content.
+    #[test]
+    fn a_single_non_black_pixel_clears_the_flag() {
+        let mut buf = vec![0u8; 4 * 6];
+        buf[4 * 3 + 1] = 1; // one green pixel
+        assert!(!looks_protected(&buf));
+
+        let mut alpha_only = vec![0u8; 4 * 6];
+        for px in alpha_only.chunks_exact_mut(4) {
+            px[3] = 0xFF;
+        }
+        assert!(looks_protected(&alpha_only));
     }
 }
