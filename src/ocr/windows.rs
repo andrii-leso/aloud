@@ -227,7 +227,10 @@ impl WindowsOcr {
             Err(e) => return Err(e).context("OcrEngine.TryCreateFromUserProfileLanguages failed"),
         };
 
-        let language_tag = engine.RecognizerLanguage()?.LanguageTag()?.to_string_lossy();
+        let language_tag = engine
+            .RecognizerLanguage()?
+            .LanguageTag()?
+            .to_string_lossy();
         let max_image_dimension =
             WinRtOcr::MaxImageDimension().context("OcrEngine.MaxImageDimension failed")?;
 
@@ -246,7 +249,11 @@ impl WindowsOcr {
 }
 
 /// The whole WinRT half, run on a thread that is guaranteed apartment-free.
-fn recognise_blocking(path: &HSTRING, language_tag: &str, max_image_dimension: u32) -> Result<String> {
+fn recognise_blocking(
+    path: &HSTRING,
+    language_tag: &str,
+    max_image_dimension: u32,
+) -> Result<String> {
     let _mta = Mta::enter()?;
 
     // 0 == FileAccessMode::Read == STGM_READ, correct under either reading.

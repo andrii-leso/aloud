@@ -59,7 +59,11 @@ fn log_path() -> Option<PathBuf> {
 /// and from `lib.rs`; all three must change together.
 #[cfg(target_os = "windows")]
 fn log_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join("com.andriileso.aloud").join("logs").join("aloud.log"))
+    dirs::data_local_dir().map(|dir| {
+        dir.join("com.andriileso.aloud")
+            .join("logs")
+            .join("aloud.log")
+    })
 }
 
 /// Opens (creating [`log_path`]'s parent directory if absent, truncating
