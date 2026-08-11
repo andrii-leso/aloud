@@ -1,5 +1,6 @@
-//! File logging to `~/Library/Logs/Aloud/aloud.log` — the standard macOS
-//! per-app log location.
+//! File logging to the standard per-app log location: on macOS
+//! `~/Library/Logs/Aloud/aloud.log`, on Windows
+//! `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log`. See [`log_path`].
 //!
 //! This exists because `eprintln!` is not debuggable in practice: when
 //! Aloud is launched as a bundle via LaunchServices (the *only* way it
@@ -36,8 +37,29 @@ const MAX_LOG_BYTES: u64 = 1024 * 1024; // 1 MB
 /// escalate into an app failure.
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 
+/// macOS: `~/Library/Logs/Aloud/aloud.log`, the standard per-app location.
+#[cfg(not(target_os = "windows"))]
 fn log_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join("Library/Logs/Aloud/aloud.log"))
+}
+
+/// Windows: `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log`.
+///
+/// The bundle identifier is in the path for the same reason
+/// `MODEL_CACHE_SUBPATH` in `lib.rs` carries it: Tauri's NSIS uninstaller only
+/// removes folders named after the identifier, so anything written beside it
+/// rather than inside it is orphaned on every uninstall. The log is ~1 MB
+/// against the model's 385 MB, but there is no reason to have two rules.
+///
+/// `dirs::data_local_dir()` is `%LOCALAPPDATA%` here — the same directory
+/// `dirs::cache_dir()` returns on this platform, since `dirs` 5.0 collapses
+/// the two on Windows. `data_local_dir` is named for what a log actually is.
+///
+/// The identifier is duplicated from `tauri.conf.json`'s `identifier` field
+/// and from `lib.rs`; all three must change together.
+#[cfg(target_os = "windows")]
+fn log_path() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join("com.andriileso.aloud").join("logs").join("aloud.log"))
 }
 
 /// Opens (creating `~/Library/Logs/Aloud/` if absent, truncating the log
@@ -90,8 +112,8 @@ pub fn line(msg: &str) {
     }
 }
 
-/// Formats its arguments and appends them as one timestamped line to
-/// `~/Library/Logs/Aloud/aloud.log`. Usable anywhere in the crate via
+/// Formats its arguments and appends them as one timestamped line to the
+/// platform log file ([`crate::log::line`]). Usable anywhere in the crate via
 /// `crate::log_line!(...)`; from the `aloud` binary, `aloud::log_line!(...)`.
 #[macro_export]
 macro_rules! log_line {
