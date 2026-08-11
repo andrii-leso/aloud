@@ -292,9 +292,11 @@ shows none of it either. Everything worth diagnosing — app
 start, engine load, hotkey presses, each stage of a region capture
 (preflight, `screencapture` invocation and exit status, output-file
 presence/size, OCR text length, detected language, speak start/finish),
-the Service callback firing, and every error — is also logged to
-`~/Library/Logs/Aloud/aloud.log` (append-only, truncated at startup past
-1 MB). `tail -f` it while reproducing an issue.
+the Service callback firing, and every error — is also logged to a file
+(append-only, truncated at startup past 1 MB): on macOS
+`~/Library/Logs/Aloud/aloud.log`, on Windows
+`%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log`. `tail -f` it (or
+`Get-Content -Wait`) while reproducing an issue.
 
 ## Known limits
 

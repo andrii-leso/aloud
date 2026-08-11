@@ -33,7 +33,7 @@ the suite locally.
 | Settings window | tray → Settings… | region shortcut, voice (F5/M5), speed (0.7-2.0), launch at login |
 | Live voice/speed | settings window | applies to the running engine, no relaunch |
 | Launch at login | settings window, **default off** | `SMAppService`, not a LaunchAgent |
-| Logging | always | `~/Library/Logs/Aloud/aloud.log` |
+| Logging | always | macOS `~/Library/Logs/Aloud/aloud.log`; Windows `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log` |
 
 **`Cmd+Shift+A` is a toggle, not a "read this."** Same text selected → pause, then resume.
 Different text → stop and read the new passage. Nothing in flight → read it. The decision is
@@ -106,8 +106,9 @@ and the liveness-probe design needs another look.
    the Services menu — no error anywhere. That cost M3 another session.
 3. **`NSApp.hide(nil)` first in `read_selection`**, before the pasteboard read and before
    every early return. It is the focus hand-back.
-4. **`~/Library/Logs/Aloud/aloud.log`.** `eprintln!` goes nowhere from a LaunchServices-launched
-   bundle. Read this file first when something does not work.
+4. **The log file** — macOS `~/Library/Logs/Aloud/aloud.log`, Windows
+   `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log`. `eprintln!` goes nowhere from a
+   LaunchServices-launched bundle. Read this file first when something does not work.
 
 Rebuild and reinstall (only when asked — the owner is using the installed app):
 

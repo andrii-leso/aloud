@@ -62,9 +62,9 @@ fn log_path() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join("com.andriileso.aloud").join("logs").join("aloud.log"))
 }
 
-/// Opens (creating `~/Library/Logs/Aloud/` if absent, truncating the log
-/// first if it has grown past `MAX_LOG_BYTES`) the log file for the life
-/// of the process.
+/// Opens (creating [`log_path`]'s parent directory if absent, truncating
+/// the log first if it has grown past `MAX_LOG_BYTES`) the log file for the
+/// life of the process.
 ///
 /// Call once, at the very top of `main`, before anything else that might
 /// log — every `line()` call before `init()` runs is silently dropped.
