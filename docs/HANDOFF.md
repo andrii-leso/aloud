@@ -5,8 +5,10 @@ shortcut, live voice/speed) and then, in one run, launch-at-login, real pause/re
 ⌘⇧A as a selection-aware play/pause toggle. It replaces the 2026-08-09 post-M4 handoff;
 the parts of that file still worth having are folded in below.
 
-**The next goal is a Windows prototype, and its brief already exists.** Skip to
-"What comes next" if that is what you are here for.
+**Updated 2026-08-11 (from the PC): the Windows prototype in §5 is BUILT.** That section
+described it as the next goal; it now records what shipped. §1 and §4 were corrected in the
+same pass. Everything else in this file is still the 2026-08-10 macOS handoff and was not
+re-verified from Windows.
 
 Read `CLAUDE.md` first — it is short and it carries the hard constraints. Then this file,
 then whichever `docs/` record matches what you are touching.
@@ -15,14 +17,17 @@ then whichever `docs/` record matches what you are touching.
 
 ## 1. What works
 
-macOS only. `cargo test --release` is **187 passed, 0 failed, 3 ignored**.
+macOS is complete. **Windows now reads a dragged region and speaks it** (§5).
+`cargo test --release` on Windows is **198 passed, 0 failed, 3 ignored**, measured
+2026-08-11; the macOS total moved when the port landed and has not been re-measured there.
 
-The repo is now on GitHub (private, `AndrewRise/aloud`) and has CI —
-`.github/workflows/ci.yml`, macOS only, and its header is worth reading before you trust a
-tick. It runs 180 of the 187: everything that needs neither the 385 MB model nor a real
+The repo is on GitHub (private, `AndrewRise/aloud`) and has CI —
+`.github/workflows/ci.yml`, now **macOS and Windows**, and its header is worth reading before
+you trust a tick. Each job runs everything that needs neither the 385 MB model nor a real
 device. **The seven it cannot run include the engine-speed pin and the latency ratio** — the
 two guards against silently mangled speech — so a green tick is not a substitute for running
-the suite locally.
+the suite locally. The Windows job additionally does not run `packaging\make-win.ps1`, so it
+cannot catch a missing VC++ CRT.
 
 | Capability | Trigger | Notes |
 |---|---|---|
@@ -137,49 +142,59 @@ not notice a *new* file there and the rebuild will silently embed a stale binary
   (`docs/media-key-control-research.md` §4). Both halves of the media-key question are now
   closed, from opposite directions.
 - **Launch-at-login's three unknowns** are all green — see §2.
-- **`RegisterHotKey` and elevated windows on Windows** is *not* an established limitation; the
-  old claim in `M3-carry-forward.md` was corrected. It is a test item for the PC
-  (`M6-platform-research-windows.md` question 24), not a documented constraint.
+- **`RegisterHotKey` and elevated windows on Windows — ANSWERED on the PC, 2026-08-11: the
+  hotkey DOES fire.** `M3-carry-forward.md` item 3 had already demoted the old claim to a test
+  item; this is the confirmation it asked for. Measured with Aloud unelevated (Medium
+  integrity) and an elevated PowerShell holding the foreground: the hotkey fired and the
+  overlay came up over it. The control matters — an injector at Medium integrity cannot send
+  input to a High-integrity window at all (UIPI), which looks identical to the hotkey failing,
+  so the test was re-run from a High-integrity injector where the keystroke is as real as a
+  physical one. Item 3 in `M3-carry-forward.md` can be closed as confirmed.
 
-## 5. What comes next — the Windows prototype
+## 5. The Windows prototype — BUILT, 2026-08-11
 
-**The brief is written and ready to hand to the PC:**
-`BKM/PC-Queue/TASK-M6-aloud-windows-prototype.md` (in the Second Brain repo, not this one).
-It is self-contained by design — the PC has no access to this DB and no context, so the brief
-*is* the interface. Read `BKM/PC-Queue/README.md` for how that channel works: the PC never
-writes the DB, it writes a sibling `-result.md` and the Mac folds the result back in.
+Rewritten from "what comes next" to what happened. Executed from
+`BKM/PC-Queue/TASK-M6-aloud-windows-prototype.md`; the evidence, the numbered answers and the
+places the brief turned out to be wrong are in the sibling `-result.md`. The stale warnings
+this section used to carry — that the branch was six commits behind, and that the CI job must
+stay commented out — are both resolved and are gone.
 
-Prototype is done when three things work on Windows: a tray icon whose menu opens the
-settings window; region capture → OCR → speech on a global shortcut; and survival of a
-restart. Reading the *selection* is explicitly out of scope — it is a macOS Service and has
-no Windows equivalent worth faking.
+**All three prototype criteria pass.** Tray icon and menu; region capture → OCR → speech on
+`Ctrl+Shift+R`; survives a restart.
 
-**Branch `m6-windows-prep` carries the prep work** — `icons/icon.ico`, the Windows-sized tray
-PNGs and their generator, and `cfg`-gated seam stubs (`src/capture/windows.rs`,
-`src/ocr/windows.rs`, `src/selection/windows.rs`).
+**`m6-windows-prep` is 0 behind `main` and 14 ahead.** `main` is an ancestor, so merging is a
+fast-forward with no conflicts. It touches 18 files the macOS build compiles and **has never
+been compiled on a Mac** — build it there before merging, not after.
 
-**A Windows CI job is already written, commented out, at the bottom of
-`.github/workflows/ci.yml`.** Uncomment it in the same change that lands the port — not
-before, because nothing Windows compiles on `main` today and a permanently red job trains
-everyone to ignore the tick. Check its test list against what actually builds there rather
-than assuming the macOS subset carries over.
+What landed, beyond the stubs:
 
-⚠ **That branch is six commits behind `main` and was cut before the pause/toggle work.** Its
-merge base is `175c73b`; relative to `main` it is missing pause/resume, the ⌘⇧A toggle, the
-five states that toggle made reachable, and the pause-chord removal. **Rebase or merge `main`
-into it before doing anything else on Windows** — otherwise the PC builds a codebase without
-the app's central interaction, and the diff will read as a mass deletion.
+| Piece | Notes |
+|---|---|
+| Region overlay | `src/capture/windows/overlay.rs`, raw Win32, one window per monitor (constraint 4). Snapshot-first, so it is NOT a layered window — see the module doc for why |
+| OCR | `Windows.Media.Ocr`. **en-US and ru only on the dev machine**; no German. Ukrainian does not exist as a Windows OCR FOD at any price |
+| Application manifest | PerMonitorV2 from process start, long paths, UTF-8, `asInvoker` |
+| Log file | `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log` |
+| Packaging | `packaging\make-win.ps1` — copies the VC++ CRT beside the exe and verifies imports with `dumpbin`. Without it the exe does not load on a machine that lacks the redistributable |
+| CI | The Windows job is uncommented and green |
 
-Also relevant before M6 tasks are written:
+Still deliberately absent on Windows: **selection reading** (`src/selection/windows.rs` is an
+`Err` stub — no system-mediated selection channel exists; the UI Automation design is in the
+brief's Appendix S) and **launch at login** (`UnsupportedLoginItem`; the mechanism is a
+product decision, not an implementation detail).
 
-- The **"Must be verified on the PC" checklist** (32 numbered questions at the end of
-  `docs/M6-platform-research-windows.md`) settles several open recommendations with real
-  answers: Ukrainian OCR availability, the UIPI/`RegisterHotKey` claim, the MSVC static-link
-  question.
-- The **seven constraint conflicts** in that doc's "Constraint conflicts" section are
-  undecided by design — each gives options and a recommendation, not a decision. Worst-first:
-  C7 the MSVC runtime, C1 WebView2, C2/C3 OCR language packs and Ukrainian, C4 the WGC yellow
-  border, C5 elevation vs autostart, C6 MSIX sideloading.
+Three things the PC measured that contradict this repo's own docs, none yet folded into the
+Mac-owned files:
+
+1. **Global hotkeys DO fire against elevated windows** — see §4.
+2. **Protected (DRM) windows are omitted from a capture, not blackened.** You get whatever was
+   behind them. `src/capture/windows.rs` is corrected; `M6-platform-research-windows.md` is
+   not.
+3. **GDI `AlphaBlend` returns TRUE and silently does nothing** on that machine, with a
+   stretched small source. The overlay precomputes a dimmed buffer instead.
+
+Also settled: the MSVC runtime question (constraint conflict C7) — `STATIC_VCRUNTIME` links
+against `ort` but only removes two of the four CRT imports, because `MSVCP140` comes from ONNX
+Runtime's own C++. App-local deployment is the answer; `make-win.ps1`'s header records why.
 - `tauri-plugin-autostart` is banned on macOS but is the **recommended** Windows mechanism
   (HKCU `Run` key, a different mechanism entirely). If M6 adopts it, `cfg`-gate the dependency
   so it cannot reach the macOS build.

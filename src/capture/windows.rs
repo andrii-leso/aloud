@@ -67,12 +67,30 @@ mod overlay;
 /// The application manifest fixes this from process start; keep the ordering
 /// rule anyway.
 ///
-/// # A capture can legitimately come back black
+/// # Protected windows are OMITTED, not blackened — measured, 2026-08-11
 ///
-/// `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` is enforced in DWM,
-/// so DRM and banking windows return black under `BitBlt`, WGC and Desktop
-/// Duplication alike. That is a content restriction, not a permission problem
-/// and not a bug. Say so rather than going quiet.
+/// This comment used to say that `SetWindowDisplayAffinity(hwnd,
+/// WDA_EXCLUDEFROMCAPTURE)` makes DRM and banking windows "return black under
+/// `BitBlt`, WGC and Desktop Duplication alike". That is not what happens here.
+///
+/// Measured on Windows 11 25H2 against a window that set the affinity itself:
+/// the protected window is **absent from the capture entirely**, and whatever
+/// was behind it is captured in its place — 0% of the sampled pixels were
+/// black. The restriction is real (the protected content never reaches the
+/// capture) but it is an omission, not a blackout.
+///
+/// Two consequences worth knowing:
+///
+/// * [`looks_protected`] will essentially never fire for the case it was
+///   written for. It is kept because an all-black region is still worth a log
+///   line, but it is not a detector for this.
+/// * There is no reliable way to *notice* that this happened. The capture looks
+///   like an ordinary capture of the desktop, so Aloud will read out whatever
+///   was behind the protected window without any indication that the thing the
+///   user actually pointed at was withheld.
+///
+/// The older `WDA_MONITOR` (0x1) did not block a desktop `BitBlt` at all in the
+/// same test: the window's text came back fully legible. Do not rely on it.
 pub struct ScreenCapture;
 
 impl ScreenCapture {
@@ -136,8 +154,9 @@ impl RegionSelector for ScreenCapture {
         );
         if looks_protected(&sel.bgra) {
             crate::log_line!(
-                "capture: the region came back entirely black — this is normal for DRM and \
-                 protected windows (WDA_EXCLUDEFROMCAPTURE), not a permission problem"
+                "capture: the region came back entirely black — not a permission problem \
+                 (Windows has no capture permission gate). Note this is NOT the DRM case: \
+                 a protected window is omitted from the capture, not blackened"
             );
         }
 
@@ -154,10 +173,18 @@ impl RegionSelector for ScreenCapture {
     }
 }
 
-/// Every pixel exactly black — the signature of a capture that hit
-/// `WDA_EXCLUDEFROMCAPTURE`. Alpha is ignored because `BitBlt` does not write
-/// a meaningful one. A genuinely all-black region reads the same and is
-/// equally worth a log line, so there is no false positive worth caring about.
+/// Every pixel exactly black. Alpha is ignored because `BitBlt` does not write
+/// a meaningful one.
+///
+/// **This is not a protected-content detector**, despite being written as one.
+/// Measured 2026-08-11: a `WDA_EXCLUDEFROMCAPTURE` window is omitted from the
+/// capture rather than blackened, so this returns false for exactly the case it
+/// was meant to catch — see the note on [`ScreenCapture`].
+///
+/// Kept anyway, because an all-black region is a genuinely odd result worth one
+/// log line (a screen asleep mid-capture, a window that has not painted yet),
+/// and it costs one pass over a small buffer. Just do not read the log line as
+/// meaning DRM.
 fn looks_protected(bgra: &[u8]) -> bool {
     bgra.chunks_exact(4)
         .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)

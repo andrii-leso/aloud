@@ -1,7 +1,12 @@
 # Aloud
 
-A macOS menubar app that reads text aloud with a local neural voice. No
+A menubar/tray app that reads text aloud with a local neural voice. No
 cloud, no account, no network — everything runs on-device.
+
+**macOS is the complete build and is what this README describes.** Windows
+reads a dragged region and speaks it, but has no selection reading and no
+launch-at-login — see [Windows](#windows) for exactly what does and does not
+work there, and read the chords below as `Ctrl` rather than `Cmd`.
 
 Two ways to trigger it:
 
@@ -250,10 +255,12 @@ timing-sensitive tests meaningless anyway:
 cargo test --release
 ```
 
-That is 187 tests, and it needs the Supertonic model present. Three more
-are `#[ignore]`d because they need something the suite cannot assume — a
-real audio device, a local Whisper install, or an idle machine — and are
-run by hand when you touch the code they cover:
+It needs the Supertonic model present. Measured on Windows, 2026-08-11: **198
+passed / 0 failed / 3 ignored**. The macOS total differs — the Windows-only
+capture tests do not compile there — and has not been re-measured since the port
+landed. Three tests are `#[ignore]`d because they need something the suite
+cannot assume — a real audio device, a local Whisper install, or an idle machine
+— and are run by hand when you touch the code they cover:
 
 ```bash
 cargo test --release --test player_pause -- --ignored          # real audio device
@@ -261,19 +268,23 @@ cargo test --release --test speed_preserves_words -- --ignored # needs Whisper
 cargo test --release --test latency_budget -- --ignored        # idle machine only
 ```
 
-**GitHub Actions (`.github/workflows/ci.yml`) runs 180 of the 187.** It
-builds in release, compiles the Swift OCR helper, checks `cargo fmt`, and
-runs every test that needs neither the model nor a device. It does **not**
-run the seven that do — the model is 385 MB, is not in the repo, and has
-no first-run download, so a hosted runner has no way to get it. That
-means the two constraints guarding against silently mangled speech (the
-engine-speed pin and the latency ratio) are **not** enforced by CI. A
-green tick is not a substitute for running the full suite locally before
-changing `src/tts/`.
+**GitHub Actions (`.github/workflows/ci.yml`) runs the model-free subset on
+macOS and on Windows.** Each job builds in release, checks `cargo fmt`, and runs
+every test that needs neither the model nor a device; the macOS job also
+compiles the Swift OCR helper. Neither runs the seven that need the model — it
+is 385 MB, is not in the repo, and has no first-run download, so a hosted runner
+has no way to get it. That means the two constraints guarding against silently
+mangled speech (the engine-speed pin and the latency ratio) are **not** enforced
+by CI. A green tick is not a substitute for running the full suite locally
+before changing `src/tts/`.
 
-The workflow file states all of this at the top, alongside a Windows job
-that is deliberately commented out until the port exists. To re-derive
-which tests are model-free after adding a test file:
+The Windows job also does **not** run `packaging\make-win.ps1`, so it cannot
+catch a missing VC++ CRT: a hosted runner always has the redistributable
+installed, so an exe that would fail to load on a clean machine passes CI
+anyway.
+
+The workflow file states all of this at the top. To re-derive which tests are
+model-free after adding a test file:
 
 ```bash
 ALOUD_MODEL_DIR=/nonexistent cargo test --release
@@ -298,18 +309,63 @@ the Service callback firing, and every error — is also logged to a file
 `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log`. `tail -f` it (or
 `Get-Content -Wait`) while reproducing an issue.
 
-## Known limits
+## Windows
 
-- **macOS only.** Windows support is planned for a later milestone;
-  there is no build for it yet.
+Region reading works end to end: press `Ctrl+Shift+R`, drag a rectangle, hear
+the text inside it spoken. The tray icon and settings window work. It survives
+a restart. Build it with:
+
+```powershell
+packaging\make-win.ps1
+```
+
+That builds the release binary and copies the four VC++ CRT DLLs beside the exe,
+then verifies with `dumpbin` that every non-OS import is satisfied in the output
+folder. **Do not skip it and ship a bare `cargo build --release` output** — that
+exe hard-imports `MSVCP140`/`VCRUNTIME140`, which are not OS components, and it
+fails to load on any machine without Visual Studio's C++ workload. There is no
+installer; copy the folder.
+
+What is **not** there, all deliberate:
+
+- **No selection reading.** `Ctrl+Shift+A` does nothing. macOS gets the selected
+  text handed to it by a system Service; Windows has no equivalent channel, and
+  the clipboard route is ruled out permanently (it needs the same kind of
+  invasive access the Service exists to avoid). The settings window says so
+  rather than offering a control that cannot work.
+- **No launch at login.** The toggle renders disabled with a note. Which
+  mechanism to use is an open product decision, not an oversight.
+- **English and Russian OCR only, on this machine.** Windows OCR language packs
+  are per-machine; `de-DE` is not installed here, and Ukrainian does not exist
+  as a Windows OCR feature-on-demand at any price. So Aloud's four-language
+  design is, on Windows, whatever the OS happens to have — which is the sharpest
+  gap against macOS, where Vision covers all four.
+- **No pause chord**, because there is no selection chord to overload. Use the
+  tray's Pause/Resume item.
+
+Two Windows behaviours worth knowing. The overlay **freezes the screen** while
+you drag — it paints a snapshot, which is also what Snipping Tool does, and it
+is what makes the captured rectangle exactly what you saw. And a window that
+opts out of capture (DRM video, some banking apps) is simply **absent** from the
+capture: you get whatever was behind it, not a black box.
+
+## Known limits
 - **First audio takes a few seconds, and it's load-dependent.** On a
   quiet machine, expect roughly 3 seconds from triggering a read to
   hearing the first word (model load happens once at launch, not per
   read). Under load — other CPU-heavy work running at the same time —
   this gets noticeably slower; it is not a fixed budget, it is a
   property of how busy the machine is at that moment.
-- **The Supertonic model must already exist at `~/.cache/supertonic3`**
-  (or `$ALOUD_MODEL_DIR`, if set) — there is no first-run download yet.
+- **The Supertonic model must already exist** — there is no first-run download
+  yet. `$ALOUD_MODEL_DIR` wins if set; otherwise macOS looks in
+  `~/.cache/supertonic3` and Windows in
+  `%LOCALAPPDATA%\com.andriileso.aloud\supertonic3`. The app logs which path it
+  resolved and whether it exists, on the line before `engine load complete`, so
+  a silent no-audio startup is diagnosable from the log. On Windows, note that a
+  `$env:ALOUD_MODEL_DIR` set in a shell is **not** inherited by anything
+  launched from Explorer or the tray — set it with
+  `[Environment]::SetEnvironmentVariable('ALOUD_MODEL_DIR', '<path>', 'User')`
+  and start a new session.
 - **The region hotkey is silently ignored while another read is in
   flight — including a paused one.** A second `Cmd+Shift+R` that lands
   while a read is under way is dropped with no notification, the same as a
