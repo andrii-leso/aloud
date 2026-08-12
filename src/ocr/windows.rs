@@ -133,13 +133,79 @@ fn pin_process_mta() {
 /// reverse case — a source already larger than the ceiling is scaled DOWN,
 /// because `RecognizeAsync` rejects an oversized bitmap outright.
 ///
+/// # 1.5× is not enough, and the floor is a hard 40 px — measured 2026-08-12
+///
+/// A flat 1.5× leaves the common case broken. `Windows.Media.Ocr` needs **at
+/// least 40 px on each side of the image it is handed**, and that threshold is
+/// sharp rather than gradual — measured on this machine against identical text:
+///
+/// | region dragged | after 1.5× | recognised |
+/// |---|---|---|
+/// | 360 × 26 | 540 × **39** | **nothing** |
+/// | 360 × 27 | 540 × **41** | 20 chars |
+///
+/// One pixel of source height is the difference between silence and text. A
+/// single line of UI text is ~13–15 px tall, so *every* single-line drag —
+/// which is the gesture this app exists for — landed under the floor and came
+/// back empty. On 30 tight crops of real screen text, a flat 1.5× recognised
+/// **1**.
+///
+/// So the scale is now whatever it takes to clear the floor on the *smaller*
+/// side, or 1.5×, whichever is larger.
+///
+/// **The floor is exclusive, hence 48 rather than 40.** Aiming at exactly 40
+/// was tried first and did not work: regions scaled to land on 40 exactly still
+/// recognised nothing (49×21 → 93×40 → empty, 23×13 → 71×40 → empty). Overshoot
+/// is free, so there is margin rather than a fight over the boundary.
+///
+/// Measured before and after, same text, same coordinates:
+///
+/// | dragged | before | after |
+/// |---|---|---|
+/// | 360 × 21 (one line) | 540 × 32 → **0 chars** | — |
+/// | 360 × 19 (one line) | — | 909 × 48 → **39 chars**, 3 runs of 3 |
+/// | 360 × 26 (one line) | 540 × 39 → **0 chars** | 665 × 48 → **39 chars** |
+/// | 360 × 64 (two lines) | — | **53 chars** |
+///
+/// **What this does not fix**, so nobody expects more of it than it gives:
+/// a pixel-tight crop with no margin at all around the glyphs still returns
+/// nothing (360 × 13, the exact glyph box, is empty even at 1329 × 48), and so
+/// does a single short word (49 × 21, 53 × 23). Clearing the floor is necessary
+/// and not sufficient — below roughly a line-with-margin, `Windows.Media.Ocr`
+/// wants more than pixels. A bundled engine is the answer to that residue if it
+/// is ever worth the ~20 MB; it measured 30/30 on exactly these crops.
+///
+/// **Scaling, not padding.** The obvious alternative is to paste the crop onto a
+/// 40×40 canvas, which preserves glyph size. It is rejected: padding a region
+/// smaller than the floor means pulling in the neighbouring screen pixels, and
+/// in a dense UI that means OCR reads text the user did not select — Aloud
+/// speaking something it was not pointed at. Scaling touches no pixel outside
+/// the selection, and enlarging the glyphs helps recognition rather than
+/// hurting it.
+///
+/// The ceiling still wins where the two conflict: an extremely elongated region
+/// (say 9000 × 10) cannot clear the floor without blowing `MaxImageDimension`,
+/// so it is left under it and will recognise nothing. That is unavoidable and
+/// is not new.
+///
 /// Pure: no OS, no WinRT, unit-testable. `ceiling` is bound once and used for
 /// both the scale divisor and the clamp bound, so a `max_dim` of 0 cannot make
 /// `clamp` panic on `min > max`.
 fn upscale_dimensions(w: u32, h: u32, max_dim: u32) -> (u32, u32) {
     const TARGET: f64 = 1.5;
+    /// The measured floor, per side, of the image handed to `RecognizeAsync`,
+    /// plus margin. Aiming at exactly 40 was tried and did not work: regions
+    /// scaled to land on 40 exactly still recognised nothing, so the floor is
+    /// not inclusive. The extra pixels cost nothing.
+    const MIN_DIM: f64 = 48.0;
+
     let ceiling = max_dim.max(1);
-    let scale = TARGET.min(ceiling as f64 / w.max(h).max(1) as f64);
+    // Enough to lift the SHORTER side over the floor — that is the side that
+    // fails first, and for a dragged line of text it is always the height.
+    let to_clear_floor = MIN_DIM / w.min(h).max(1) as f64;
+    let wanted = TARGET.max(to_clear_floor);
+    let scale = wanted.min(ceiling as f64 / w.max(h).max(1) as f64);
+
     let dst_w = ((w as f64 * scale).round() as u32).clamp(1, ceiling);
     let dst_h = ((h as f64 * scale).round() as u32).clamp(1, ceiling);
     (dst_w, dst_h)
@@ -423,9 +489,55 @@ mod tests {
         assert!(w <= 10_000 && h >= 1);
     }
 
+    /// Was `(2, 2)` under a flat 1.5×, which is far under the 40 px floor and
+    /// so recognised nothing. Clearing the floor is the point of the change.
     #[test]
     fn never_returns_zero() {
-        assert_eq!(upscale_dimensions(1, 1, 10_000), (2, 2));
+        assert_eq!(upscale_dimensions(1, 1, 10_000), (48, 48));
+    }
+
+    /// The regression guard for the defect this floor exists to fix: a single
+    /// dragged line of UI text. 13 px is a realistic line height at 100%.
+    #[test]
+    fn a_single_line_of_text_clears_the_ocr_floor() {
+        for (w, h) in [(360, 26), (360, 13), (620, 20), (200, 15)] {
+            let (dw, dh) = upscale_dimensions(w, h, 10_000);
+            assert!(
+                dw >= 40 && dh >= 40,
+                "{w}x{h} -> {dw}x{dh}, under the 40 px floor: OCR returns nothing"
+            );
+        }
+    }
+
+    /// Both sides count, not just the shorter one at the time of writing: a
+    /// narrow *column* fails on width exactly as a line fails on height.
+    #[test]
+    fn a_narrow_column_clears_the_floor_on_width() {
+        let (dw, dh) = upscale_dimensions(26, 300, 10_000);
+        assert!(
+            dw >= 40,
+            "26x300 -> {dw}x{dh}, still under the floor on width"
+        );
+    }
+
+    /// Anything already comfortably over the floor keeps the plain 1.5×, so the
+    /// floor cannot quietly become a magnifier for ordinary selections.
+    #[test]
+    fn a_comfortable_region_is_untouched_by_the_floor() {
+        assert_eq!(upscale_dimensions(400, 200, 10_000), (600, 300));
+    }
+
+    /// The ceiling still wins. An extremely elongated region cannot clear the
+    /// floor without blowing MaxImageDimension; it is left under it rather than
+    /// producing an oversized bitmap `RecognizeAsync` would reject outright.
+    #[test]
+    fn the_ceiling_outranks_the_floor() {
+        let (dw, dh) = upscale_dimensions(9_000, 10, 10_000);
+        assert!(
+            dw <= 10_000,
+            "must never exceed MaxImageDimension, got {dw}"
+        );
+        assert!(dh < 40, "this case genuinely cannot clear the floor: {dh}");
     }
 
     /// A zero ceiling must not make `clamp` panic on `min > max`.
