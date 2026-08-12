@@ -1044,6 +1044,33 @@ fn main() {
             // `StartupConfig` for the bug this closes.
             let startup = StartupConfig::from_settings(&settings);
 
+            // Logged BEFORE the load, and with the reason it resolved that
+            // way, because every way this goes wrong is silent. `model_dir()`
+            // has three branches and the one that fires is invisible from the
+            // outside: with `$ALOUD_MODEL_DIR` unset the app falls through to a
+            // platform cache path that is usually EMPTY, and the only symptom
+            // is that synthesis produces nothing. On Windows that is the
+            // common case rather than the edge one, because a `$env:` variable
+            // dies with the shell that set it and is not inherited by anything
+            // launched from Explorer or the tray.
+            //
+            // The next line ("engine load complete") is the proof it worked, so
+            // a log that has this line and not that one names the directory to
+            // go and look at.
+            match aloud::model_dir() {
+                Ok(dir) => aloud::log_line!(
+                    "model dir: {} (from {}, exists={})",
+                    dir.display(),
+                    if std::env::var_os("ALOUD_MODEL_DIR").is_some() {
+                        "$ALOUD_MODEL_DIR"
+                    } else {
+                        "the platform default - $ALOUD_MODEL_DIR is not set"
+                    },
+                    dir.exists()
+                ),
+                Err(e) => aloud::log_line!("model dir: UNRESOLVED: {e}"),
+            }
+
             // Paid once, here: the Supertonic model load is ~1.4s and must
             // happen at launch, not on the first hotkey press.
             let engine = Arc::new(SupertonicEngine::spawn(startup.voice)?);
