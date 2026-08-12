@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2026 Andrii Leso
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+-------------------------------------------------------------------------------
+THIS LICENCE COVERS ALOUD'S OWN SOURCE CODE ONLY. IT DOES NOT COVER THE MODEL.
+-------------------------------------------------------------------------------
+
+Aloud speaks using the Supertonic 3 model, and that model's *weights* are NOT
+MIT. They are released under the BigScience Open RAIL-M License, which carries
+use restrictions that MIT does not — see LICENSES/supertonic-weights-OpenRAIL-M.txt.
+The weights are not contained in this repository; they are downloaded at
+runtime. Conflating the two licences is the specific mistake this note exists to
+prevent, and hard constraint 3 in CLAUDE.md says so at more length.
+
+Third-party components are listed in LICENSES/. That directory is NOT yet a
+complete third-party notice for the compiled binary: Aloud statically links a
+large Rust dependency tree plus ONNX Runtime, and no generated NOTICE exists
+yet. That obligation bites on distribution, not on building locally.
