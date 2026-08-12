@@ -345,9 +345,14 @@ What is **not** there, all deliberate:
 
 Two Windows behaviours worth knowing. The overlay **freezes the screen** while
 you drag — it paints a snapshot, which is also what Snipping Tool does, and it
-is what makes the captured rectangle exactly what you saw. And a window that
-opts out of capture (DRM video, some banking apps) is simply **absent** from the
-capture: you get whatever was behind it, not a black box.
+is what makes the captured rectangle exactly what you saw.
+
+And a window that opts out of capture (DRM video, some banking apps) does one of
+two things depending on how it opted out, measured 2026-08-12: the older
+`WDA_MONITOR` mode comes back **black**, while `WDA_EXCLUDEFROMCAPTURE` — what
+modern DRM uses — makes the window **absent**, so you get whatever was behind
+it. The second case is silent: Aloud will read out the window underneath with no
+indication that the thing you pointed at was withheld.
 
 ## Known limits
 - **First audio takes a few seconds, and it's load-dependent.** On a
