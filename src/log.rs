@@ -76,15 +76,30 @@ pub fn init() {
     let Some(path) = log_path() else {
         return; // no home directory resolvable; nothing we can do
     };
+    init_at(&path);
+}
+
+/// The whole of [`init`] except deciding *where*.
+///
+/// Split out so the unit test can point it at a temp directory. The obvious
+/// alternative — overriding `$HOME` and letting `log_path()` follow it — is
+/// what this test used to do, and it does not work on Windows: `dirs`'
+/// `HOME`-reading implementation is inside a Unix-only module, and the Windows
+/// path goes through `SHGetKnownFolderPath`, which never looks at the
+/// environment. The test therefore wrote its probe lines into the **real** log
+/// and then read an empty temp directory. Passing the path in works the same on
+/// both platforms, and stops the suite polluting a log the owner is trying to
+/// read.
+fn init_at(path: &std::path::Path) {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    if let Ok(meta) = fs::metadata(&path) {
+    if let Ok(meta) = fs::metadata(path) {
         if meta.len() > MAX_LOG_BYTES {
-            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(path);
         }
     }
-    if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(file) = OpenOptions::new().create(true).append(true).open(path) {
         if let Ok(mut guard) = LOG_FILE.lock() {
             *guard = Some(file);
         }
@@ -149,55 +164,66 @@ mod tests {
         assert!(timestamp_secs() > 1_704_067_200);
     }
 
+    /// Split by platform because `log_path()` is. The macOS assertion is
+    /// unchanged; the Windows arm used to assert the macOS path and passed only
+    /// while `log_path()` had no Windows arm to disagree with.
     #[test]
-    fn log_path_is_under_library_logs_aloud() {
+    fn log_path_is_the_platform_log_location() {
         let Some(path) = log_path() else {
             return; // no home dir in this environment; nothing to assert
         };
-        assert!(path.ends_with("Library/Logs/Aloud/aloud.log"));
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            path.ends_with("Library/Logs/Aloud/aloud.log"),
+            "got {}",
+            path.display()
+        );
+        // Whole-component match, and `Path` treats `/` as a separator on
+        // Windows too. The bundle identifier is the load-bearing part: it is
+        // what makes the NSIS uninstaller clean this up.
+        #[cfg(target_os = "windows")]
+        assert!(
+            path.ends_with("com.andriileso.aloud/logs/aloud.log"),
+            "got {}",
+            path.display()
+        );
     }
 
-    /// `init()` actually opens an appendable file at the expected path,
-    /// and a subsequent `line()` call appends a timestamped line to it.
-    /// Uses `$ALOUD_MODEL_DIR`-style isolation via `$HOME` override so
-    /// this does not touch the real `~/Library/Logs/Aloud/aloud.log`.
+    /// `init_at()` creates the parent directory and opens an appendable file,
+    /// and a subsequent `line()` call appends a timestamped entry to it.
+    ///
+    /// Points [`init_at`] at a temp directory rather than overriding `$HOME`.
+    /// The `$HOME` version of this test was a no-op on Windows — `dirs` never
+    /// reads the environment there — so it wrote its probe into the owner's
+    /// real log and then failed reading an empty temp directory. It also had to
+    /// mutate the process environment from a test thread, which this no longer
+    /// does at all.
     #[test]
     fn init_then_line_appends_a_timestamped_entry() {
-        let tmp_home = std::env::temp_dir().join(format!(
-            "aloud-log-test-home-{}-{}",
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "aloud-log-test-{}-{}",
             std::process::id(),
             timestamp_secs()
         ));
-        std::fs::create_dir_all(&tmp_home).unwrap();
-        let real_home = std::env::var("HOME").ok();
-        // SAFETY: this test does not run concurrently with other tests
-        // that read $HOME from another thread in a way that would race
-        // observably — `dirs::home_dir()` is read fresh inside `init()`
-        // and `log_path()`, both called only from this test's own thread
-        // for the duration of the override.
-        unsafe { std::env::set_var("HOME", &tmp_home) };
+        // Deliberately NOT created first: this also pins that `init_at`
+        // creates the parent directory, which `init()` relies on for a
+        // first-ever launch.
+        let path = tmp_dir.join("aloud.log");
 
-        init();
+        init_at(&path);
         line("init_then_line_appends_a_timestamped_entry probe");
 
-        let log_path = tmp_home.join("Library/Logs/Aloud/aloud.log");
-        let contents = std::fs::read_to_string(&log_path)
-            .expect("init() should have created an appendable log file");
+        let contents = std::fs::read_to_string(&path)
+            .expect("init_at() should have created an appendable log file");
 
-        unsafe {
-            match real_home {
-                Some(h) => std::env::set_var("HOME", h),
-                None => std::env::remove_var("HOME"),
-            }
-        }
-        std::fs::remove_dir_all(&tmp_home).ok();
-        // Reset the module-level file handle so later tests in this
-        // binary (if any come to depend on init() having run) see a
-        // clean slate rather than a handle pointed at the now-deleted
-        // temp-home log file.
+        // Release the handle before removing the directory: on Windows an open
+        // file cannot be deleted, so leaving it set would leak a temp dir every
+        // run. It also gives later tests in this binary a clean slate rather
+        // than a handle pointed at a deleted file.
         if let Ok(mut guard) = LOG_FILE.lock() {
             *guard = None;
         }
+        std::fs::remove_dir_all(&tmp_dir).ok();
 
         assert!(contents.contains("init_then_line_appends_a_timestamped_entry probe"));
         assert!(

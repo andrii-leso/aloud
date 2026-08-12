@@ -4,9 +4,15 @@
 # WHAT THIS CHECK DOES AND DOES NOT PROVE — read this before trusting a tick.
 # ---------------------------------------------------------------------------
 #
-# A green tick here means: the crate compiles in release on macOS, the Swift
-# OCR helper compiles, the code is rustfmt-clean, and 180 of the repo's 187
-# tests pass.
+# A green tick here means: the crate compiles in release on macOS AND on
+# Windows, the Swift OCR helper compiles, the code is rustfmt-clean, and the
+# model-free subset of the tests passes on both.
+#
+# Measured on the Windows runner's exact command, on real hardware, 2026-08-11:
+# 192 passed / 0 failed / 1 ignored. The macOS count moved when the port landed
+# (the Windows-only capture tests do not exist there, and two new command tests
+# do) and has NOT been re-measured on a Mac — treat the old "180 of 187" as
+# stale rather than as a target.
 #
 # It does NOT mean the app works. Seven tests cannot run on a hosted runner,
 # and they are the ones that exercise real speech:
@@ -149,56 +155,66 @@ jobs:
             --test shortcut \
             --test shortcut_apply
 
-# ---------------------------------------------------------------------------
-# The Windows job. Deliberately commented out — do not uncomment on its own.
-# ---------------------------------------------------------------------------
-#
-# There is no Windows implementation on main yet (M6). WinRT bindings do not
-# compile on macOS, the OCR and selection seams have no Windows side, and
-# `cargo build` for windows-latest would fail on the first file. A job that is
-# permanently red is worse than no job: it trains everyone to ignore the tick.
-#
-# Uncomment this in the SAME change that lands the port, not before, and check
-# the test list against what actually builds there — most of the subset above
-# is platform-neutral, but that is a claim to verify on the runner, not to
-# assume from here.
-#
-#  windows:
-#    name: Windows — build, format, model-free tests
-#    runs-on: windows-latest
-#
-#    steps:
-#      - uses: actions/checkout@v4
-#
-#      - uses: dtolnay/rust-toolchain@stable
-#        with:
-#          components: rustfmt
-#
-#      - uses: actions/cache@v4
-#        with:
-#          path: |
-#            ~/.cargo/registry
-#            ~/.cargo/git
-#            ~/AppData/Local/ort.pyke.io
-#            target
-#          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-#
-#      - name: Format
-#        run: cargo fmt --check
-#
-#      - name: Build (release)
-#        run: cargo build --release --locked
-#
-#      - name: Test (model-free subset)
-#        run: |
-#          cargo test --release --locked `
-#            --lib `
-#            --bins `
-#            --test actions `
-#            --test player_pause `
-#            --test player_stop `
-#            --test selection `
-#            --test selection_toggle `
-#            --test settings `
-#            --test shortcut `
-#            --test shortcut_apply
+  # ---------------------------------------------------------------------------
+  # The Windows job. Uncommented when M6 landed the port, per the instruction
+  # that used to sit here: not before, and only after checking the test list
+  # against what actually builds there.
+  #
+  # That check was run rather than assumed. On the development PC — Windows 11
+  # 25H2, MSVC 14.44, the same command spelled below — the subset came back
+  # 192 passed / 0 failed / 1 ignored with the model deliberately absent. The
+  # one ignored is the rodio test that opens a real audio device, which is
+  # #[ignore]d in the source and skipped here exactly as it is locally.
+  #
+  # A hosted runner is still not the same machine, so the first red run to
+  # expect is an environmental one (no audio device, a different MSVC), not a
+  # code one.
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows — build, format, model-free tests
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Same four-paths-travel-together reasoning as the macOS job above; only
+      # the ort cache location differs. On Windows `ort-sys` caches the prebuilt
+      # static ONNX Runtime under %LOCALAPPDATA%, which is what `~/AppData/Local`
+      # resolves to for the runner user. Measured on the dev PC: 272.8 MB.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/AppData/Local/ort.pyke.io
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      # NOTE: this does NOT run packaging/make-win.ps1, so it does not check
+      # that the VC++ CRT gets shipped beside the exe. A hosted runner always
+      # has the redistributable installed, so an exe that would fail to load on
+      # a clean machine passes here regardless — the same blind spot the dev PC
+      # had. That check lives in make-win.ps1's dumpbin step.
+      - name: Test (model-free subset)
+        run: |
+          cargo test --release --locked `
+            --lib `
+            --bins `
+            --test actions `
+            --test player_pause `
+            --test player_stop `
+            --test selection `
+            --test selection_toggle `
+            --test settings `
+            --test shortcut `
+            --test shortcut_apply
