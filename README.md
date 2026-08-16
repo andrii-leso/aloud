@@ -205,6 +205,25 @@ short of that has been verified.
 
 ## Building
 
+**Two prerequisites that are not obvious from a clone**, both of which stop
+the build rather than degrading it:
+
+1. **A self-signed "Aloud Dev" code-signing certificate in your login
+   keychain.** `packaging/make-app.sh` fails hard without one — deliberately,
+   for the reason explained further down. Create it once: **Keychain Access →
+   Certificate Assistant → Create a Certificate…**, name it `Aloud Dev`, type
+   **Code Signing**, **Self Signed Root**. It does not need to be trusted;
+   `codesign` accepts it as is. The script's error message says the same thing
+   if you skip this. To use a different identity, set `ALOUD_SIGN_IDENTITY`.
+2. **The first build needs network access exactly once**, and not for crates.
+   `ort-sys` downloads a ~272 MB prebuilt static ONNX Runtime from
+   `parcel.pyke.io` and checks it against a SHA-256, caching it under
+   `~/Library/Caches/ort.pyke.io/` (`%LOCALAPPDATA%\ort.pyke.io\` on Windows).
+   Once that cache exists, builds are fully offline — verified by a clean
+   rebuild with `--offline` and every proxy pointed at a closed port. If you
+   need to avoid that host entirely, point `ORT_LIB_LOCATION` at your own
+   build of ONNX Runtime.
+
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"   # if cargo isn't already on PATH
 packaging/make-app.sh
