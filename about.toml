@@ -1,0 +1,63 @@
+# cargo-about configuration — generates LICENSES/THIRD-PARTY.md.
+#
+# Regenerate after ANY dependency change:
+#
+#   cargo about generate about.hbs -o LICENSES/THIRD-PARTY.md
+#
+# Why this file exists. Aloud statically links a large Rust tree plus ONNX
+# Runtime and, until 2026-08-16, reproduced none of their licences anywhere.
+# That is an obligation under nearly every licence below, and it bites on
+# DISTRIBUTION — not on building locally. See CLAUDE.md hard constraint 3.
+#
+# `accepted` is also a PREFERENCE ORDER: for a crate offering a choice
+# ("MIT OR Apache-2.0"), cargo-about picks the earliest match here. MIT is
+# first so dual-licensed crates resolve to the same licence Aloud itself
+# ships under.
+#
+# Every entry below was found in the actual tree, not copied from a template.
+# Do not add a licence here to silence an error without reading what it
+# requires — that is the whole failure mode this file guards against.
+
+accepted = [
+    # Aloud's own licence, and the overwhelming majority of the tree.
+    "MIT",
+    "Apache-2.0",
+
+    # Permissive, no obligations beyond attribution.
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",          # ICU data via the idna/zerovec family
+    "CDLA-Permissive-2.0",  # Community Data Licence, permissive variant
+    "Unlicense",
+    "BSL-1.0",
+
+    # Apache-2.0 with the LLVM exception, which only WEAKENS Apache's
+    # patent/attribution terms. Used by the compiler-builtins family.
+    "Apache-2.0 WITH LLVM-exception",
+
+    # WEAK COPYLEFT — the one class here that is not merely attribution.
+    #
+    # MPL-2.0 is FILE-level copyleft. §3.3 explicitly permits distributing it
+    # inside a "Larger Work" under other terms, so linking it into Aloud and
+    # selling the result is allowed. The obligation is §3.1: recipients must
+    # be able to get the SOURCE of the MPL-covered files. Aloud modifies none
+    # of them, so pointing at the unmodified upstream discharges it — which is
+    # what the generated NOTICE does.
+    #
+    # If anyone ever VENDORS AND EDITS one of these, that changes: the
+    # modifications themselves must then be published under MPL-2.0.
+    #
+    # In the tree as of 2026-08-16 (17 crates):
+    #   symphonia + 11 siblings   audio decoding, via rodio
+    #   cssparser, cssparser-macros, selectors, dtoa-short   via Tauri's webview
+    #   option-ext               via dirs -> dirs-sys
+    "MPL-2.0",
+]
+
+# Fail loudly rather than silently omitting a crate whose licence file
+# cannot be found. A NOTICE with a hole in it is worse than no NOTICE,
+# because it looks complete.
+[symphonia]
+accepted = ["MPL-2.0"]

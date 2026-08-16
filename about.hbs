@@ -1,0 +1,52 @@
+# Third-party licences
+
+**Generated — do not edit by hand.** Regenerate with:
+
+```
+cargo about generate about.hbs -o LICENSES/THIRD-PARTY.md
+```
+
+Aloud is distributed as a single statically-linked binary. Everything below is
+compiled into it, so its licence obligations travel with every copy of Aloud.
+This file discharges the attribution obligation common to all of them.
+
+**Two things are NOT in this file**, because they are not Rust dependencies:
+
+- **The Supertonic TTS model weights** — BigScience OpenRAIL-M, a *use-restricted*
+  licence, not merely an attribution one. Full text in `supertonic-weights-OpenRAIL-M.txt`.
+  The weights are downloaded at runtime and are not part of this binary.
+  See `LICENSES/README.md` for why the code and the weights must never be conflated.
+- **ONNX Runtime** — MIT (Microsoft), linked as a prebuilt static library fetched by
+  `ort-sys` at build time rather than as a crates.io dependency, so `cargo-about`
+  cannot see it. Its licence text is at
+  <https://github.com/microsoft/onnxruntime/blob/main/LICENSE>.
+
+**On MPL-2.0.** Some components below are Mozilla Public License 2.0, which is
+file-level copyleft rather than attribution-only. Distributing them inside Aloud is
+expressly permitted (MPL-2.0 §3.3, "Larger Works"), but recipients must be able to
+obtain the source of those files. Aloud uses every one of them **unmodified**, so the
+upstream links below satisfy that. If one is ever vendored and edited, the
+modifications must themselves be published under MPL-2.0.
+
+## Licences in use
+
+{{#each overview}}
+- **{{{name}}}** — {{count}} component{{#if (ne count 1)}}s{{/if}}
+{{/each}}
+
+## Full text
+
+{{#each licenses}}
+### {{{name}}}
+
+Used by:
+
+{{#each used_by}}
+- [{{{crate.name}}} {{crate.version}}]({{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{{crate.name}}}{{/if}})
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}
