@@ -8,11 +8,13 @@
 # Windows, the Swift OCR helper compiles, the code is rustfmt-clean, and the
 # model-free subset of the tests passes on both.
 #
-# Measured on the Windows runner's exact command, on real hardware, 2026-08-11:
-# 192 passed / 0 failed / 1 ignored. The macOS count moved when the port landed
-# (the Windows-only capture tests do not exist there, and two new command tests
-# do) and has NOT been re-measured on a Mac — treat the old "180 of 187" as
-# stale rather than as a target.
+# Measured on each job's exact command, on real hardware, not on a runner:
+#   Windows (development PC, 2026-08-11):  192 passed / 0 failed / 1 ignored
+#   macOS   (M1 Air, 2026-08-16):          182 passed / 0 failed / 1 ignored
+# The two differ legitimately: the Windows-only capture and overlay tests do
+# not exist on macOS, and the accelerator tests are #[cfg]-split per platform.
+# The full local suite on macOS — everything, including the model-backed tests
+# this workflow cannot run — is 189 passed / 0 failed / 3 ignored.
 #
 # It does NOT mean the app works. Seven tests cannot run on a hosted runner,
 # and they are the ones that exercise real speech:

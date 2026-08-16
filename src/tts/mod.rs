@@ -14,8 +14,9 @@ pub struct Pcm {
     pub duration_s: f32,
 }
 
-/// Swappable synthesis backend. Supertonic today; Kokoro is the
-/// licence-clean fallback if OpenRAIL-M ever becomes inconvenient.
+/// Swappable synthesis backend. Supertonic is the only implementation.
+/// The seam exists so a licence-clean engine could replace it if
+/// OpenRAIL-M ever becomes inconvenient — no such engine is wired.
 pub trait TtsEngine: Send + Sync {
     fn synthesize(&self, text: &str, lang: &str, speed: f32) -> anyhow::Result<Pcm>;
 }

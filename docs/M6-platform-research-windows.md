@@ -502,6 +502,18 @@ and [WM_HOTKEY](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-hotk
 
 ### 3.3 UIPI and elevated windows — a correction to the project's own doc
 
+> **RESOLVED 2026-08-11 on the development PC — the hotkey FIRES.** This section's call ("the honest
+> answer is *test it*") was right, and the test was run. Aloud unelevated (Medium integrity), an
+> elevated PowerShell holding the foreground (High integrity), both tokens read rather than assumed:
+> `Ctrl+Shift+R` fired and the overlay drew over the elevated window. `RegisterHotKey` crosses the
+> privilege boundary, exactly as the Explorer/Alt-Tab reasoning below predicts.
+>
+> **The control matters — the naive test gives a false negative.** Synthetic input from a
+> Medium-integrity process is blocked by UIPI before it is ever delivered, which looks identical to
+> the hotkey failing. Re-run from a High-integrity injector, it fires. Anyone re-testing must control
+> for integrity level. Evidence: `TASK-M6-aloud-windows-prototype-result.md` §2 q24;
+> `M3-carry-forward.md` item 3 is closed as confirmed.
+
 `M3-carry-forward.md` landmine 3 and the design spec's risk table both state: *"Global hotkeys
 silently fail against elevated windows on Windows. Unfixable OS behaviour. Document it; do not chase
 it."* **That is correct for hook-based capture. It is NOT established for `RegisterHotKey`, which is
@@ -746,6 +758,32 @@ equivalent for capture**. Do not port that logic. (The signing-identity concern 
   ([SetWindowDisplayAffinity](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)
   plus secondary write-ups). Not a permission — a content restriction. Aloud would OCR a black
   rectangle over a DRM or banking window and return nothing; it should say that rather than go quiet.
+
+  > **WRONG — corrected 2026-08-11 by measurement on the development PC. The two affinity modes
+  > behave differently, and this section names the wrong one.** Measured through Aloud's own capture
+  > path (`BitBlt(SRCCOPY)` from `GetDC(NULL)`, no `CAPTUREBLT`) against a window that set the
+  > affinity on itself **and read it back with `GetWindowDisplayAffinity`**:
+  >
+  > | Affinity (readback-confirmed) | window pixels | black | desktop behind |
+  > |---|---|---|---|
+  > | `WDA_NONE` (0x0) | 80.0% | 0.7% | 19.3% |
+  > | `WDA_MONITOR` (0x1) | 0.0% | **92.9%** | 7.1% |
+  > | `WDA_EXCLUDEFROMCAPTURE` (0x11) | 0.0% | 0.1% | **99.9%** |
+  >
+  > `WDA_MONITOR` blacks the window out. **`WDA_EXCLUDEFROMCAPTURE` — the mode modern DRM actually
+  > uses — omits it, and you capture the desktop behind it.** So the failure is not a black rectangle
+  > Aloud can detect and report; it is an ordinary-looking capture of the wrong content. Aloud reads
+  > out whatever sat behind the protected window with **no way to notice it happened.** That is a
+  > product decision still open, not a bug with a fix.
+  >
+  > `src/capture/windows.rs`'s `looks_protected()` all-black heuristic is correct for `WDA_MONITOR`
+  > and **cannot** fire for `WDA_EXCLUDEFROMCAPTURE`; its doc comment now says which is which.
+  >
+  > **WGC and Desktop Duplication were NOT measured.** Do not restore the "black under all three"
+  > claim for them without measuring. And note the methodological trap that produced two earlier
+  > wrong answers on this exact question: `SetWindowDisplayAffinity` returns `TRUE` for a constant
+  > that silently resolved to zero — **read the value back with `GetWindowDisplayAffinity` and assert
+  > it.** Evidence: `TASK-M6-aloud-windows-prototype-result.md` §13.6.
 
 ### 4.2 The yellow border, and the picker
 
@@ -1343,6 +1381,29 @@ no error anywhere. These are the Windows shapes of that failure.
   ordering, matches Microsoft's recommendation, and costs nothing. tao's runtime call then becomes a
   redundant no-op rather than the only line of defence.
 
+  > **CONFIRMED IN FORCE, 2026-08-11 on the development PC — and this one was a real gamble worth
+  > recording.** The recommendation shipped as `windows-app-manifest.xml` (`1584336`). The
+  > comma-list form is Microsoft-documented but was, at the time, **unwitnessed**: a scan of ~2,800
+  > shipping binaries across System32, SysWOW64, the VS 2022 and Windows Kits trees, Edge, Chrome
+  > and `Program Files` found **zero** using it — every one that sets `dpiAwareness` uses a bare
+  > value. And the failure mode is not graceful: on 1607+ `dpiAwareness` takes precedence over
+  > `dpiAware`, so a *rejected* string lands the process **DPI-unaware** — the silent
+  > wrong-rectangle failure hard constraint 4 exists to prevent.
+  >
+  > Measured against the running process:
+  >
+  > ```
+  > GetProcessDpiAwareness                                   -> 2 (PROCESS_PER_MONITOR_DPI_AWARE)
+  > AreDpiAwarenessContextsEqual(ctx, PER_MONITOR_AWARE_V2)  -> True
+  > AreDpiAwarenessContextsEqual(ctx, PER_MONITOR_AWARE)     -> False
+  > ```
+  >
+  > **The comma form is accepted on Windows 11 25H2 build 26200.8973**, and the overlay thread logs
+  > `PerMonitorV2 = true` on every run. The payoff is visible in the capture geometry: questions 20
+  > and 21 came back **exact** at three scales across three monitors including negative coordinates,
+  > with **zero** `dpi/96` multiplications anywhere in the code. Evidence:
+  > `TASK-M6-aloud-windows-prototype-result.md` §4.1b and §2 q20/q21.
+
 ### 6.3 Other manifest settings worth a deliberate decision
 
 All from [Application manifests](https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests) — `VERIFIED`:
@@ -1534,6 +1595,23 @@ HKCU Run key that autostart depends on is likely virtualized away, and Azure Art
 closed to a German individual. (b) stays available later as a *second* channel if Aloud is ever sold.
 
 ### C7. The MSVC runtime vs "zero runtime system dependencies" (constraint 1)
+
+> **SETTLED 2026-08-11 on the development PC. The answer is app-local deployment, option (b).**
+> Three measured findings, in the order they arrived. **(1)** A plain `cargo build --release` links
+> first time with `tauri.conf.json` untouched — the highest-risk item here was a non-event. **(2)**
+> But the resulting exe hard-imports `MSVCP140.dll`, `MSVCP140_1.dll`, `VCRUNTIME140.dll` and
+> `VCRUNTIME140_1.dll`, which are the VC++ redistributable and **not** OS components. On a clean
+> Windows install it fails at load with no useful message — a dev box can never see this, because the
+> C++ workload put them there. **(3)** `STATIC_VCRUNTIME=true` **does** link against `ort` (that was
+> the genuinely unverified part) and removes `VCRUNTIME140*` — but `MSVCP140*` remain, because those
+> come from ONNX Runtime's own C++. That leaves a static ucrt inside the exe while `msvcp140.dll`
+> drags `vcruntime140.dll` and `ucrtbase.dll` in behind it: **two CRT instances, two heaps.**
+> Rejected on that basis, not on the link result.
+>
+> `packaging\make-win.ps1` builds, copies the four DLLs (751 KB) beside the exe, and then **verifies
+> with `dumpbin` that every non-OS import is satisfied in the output folder** — the DLL list is a
+> claim until it is checked. CI does not run that script, so a green tick cannot catch a missing CRT.
+> Evidence: `TASK-M6-aloud-windows-prototype-result.md` §13.1.
 
 **The conflict, and it is the most likely thing to stop the PC dead.** Rust does not statically link
 the CRT on `x86_64-pc-windows-msvc` by default, so a naive build needs `vcruntime140.dll` on the
