@@ -133,7 +133,7 @@ struct Runtime {
     read_region_item: MenuItem<tauri::Wry>,
     /// Handle to the tray's Pause/Resume item. Its label is rendered from
     /// `App::is_paused()` — see `refresh_pause_label`. This item is the
-    /// only pause control that works with no selection: ⌘⇧A pauses too,
+    /// only pause control that works with no selection: ⌃⌘S pauses too,
     /// but it arrives as a macOS Service, and macOS will not invoke a
     /// Service with nothing selected.
     pause_item: MenuItem<tauri::Wry>,
@@ -200,7 +200,7 @@ fn set_error_status(rt: &Runtime, message: &str) {
 /// the tray status untouched — the first because a read is already
 /// underway, the second because a cancel is not a failure. A read that
 /// runs to the end resets the status to `Ready` (clearing any stale
-/// error); one that was stopped before the end — displaced by a ⌘⇧A
+/// error); one that was stopped before the end — displaced by a ⌃⌘S
 /// takeover, or the tray's Stop — deliberately does not, since it did not
 /// complete and whatever replaced it will report for itself. An
 /// empty result (captured something, found no text) and any `Err` (most
@@ -228,7 +228,7 @@ fn spawn_read_region(rt: Arc<Runtime>) {
                 reset_status(&rt);
             }
             Ok(Some(Outcome::Interrupted)) => {
-                // Displaced by a ⌘⇧A takeover, or the tray's Stop.
+                // Displaced by a ⌃⌘S takeover, or the tray's Stop.
                 // Deliberately does NOT reset the status: this read did
                 // not complete, and whatever replaced it is speaking now
                 // and will report for itself.
@@ -625,7 +625,7 @@ fn refresh_tray_labels(app: &tauri::AppHandle, region_shortcut: &str) {
 /// tray. A "Pause" item on a paused read is the lying-control defect
 /// class this app has spent the week removing.
 ///
-/// No chord is shown. Pause has no global hotkey of its own: ⌘⇧A is the
+/// No chord is shown. Pause has no global hotkey of its own: ⌃⌘S is the
 /// keyboard route (see `intent::decide_selection`), and naming it here
 /// would be a lie whenever nothing is selected, which is the one case
 /// this item exists for.
@@ -638,14 +638,14 @@ fn pause_label(paused: bool) -> String {
 /// Reads `App::is_paused()` (which reads the sink) rather than taking a
 /// bool, so no call site can hand it a stale value. Must be called after
 /// anything that can change the paused state: the tray's Pause/Resume
-/// item, the ⌘⇧A toggle, Stop, and the end of a read.
+/// item, the ⌃⌘S toggle, Stop, and the end of a read.
 fn refresh_pause_label(rt: &Runtime) {
     let _ = rt.pause_item.set_text(pause_label(rt.app.is_paused()));
 }
 
 /// Toggles pause and re-syncs the tray. The tray item's only entry
 /// point, so it cannot update the state without also updating the label.
-/// The ⌘⇧A route does not come through here — it toggles inside
+/// The ⌃⌘S route does not come through here — it toggles inside
 /// `App::speak_selection` and its caller refreshes the label itself.
 fn toggle_pause(rt: &Runtime) {
     let paused = rt.app.toggle_pause();
@@ -1100,7 +1100,7 @@ fn main() {
             )?;
 
             // Informational, and deliberately worded as a statement of fact rather
-            // than an instruction: ⌘⇧A already works, because Info.plist ships it as
+            // than an instruction: ⌃⌘S already works, because Info.plist ships it as
             // the Service's NSKeyEquivalent. The previous label told the user to go
             // and assign it, which was untrue.
             //
@@ -1112,14 +1112,14 @@ fn main() {
             let read_selection_item = MenuItem::with_id(
                 app,
                 "read_selection_info",
-                "Read / Pause Selection  (⌘⇧A, or the Services menu)",
+                "Read / Pause Selection  (⌃⌘S, or the Services menu)",
                 false,
                 None::<&str>,
             )?;
 
             // Windows has no Services menu and no system-mediated selection
             // channel at all, so there is no chord to name and nothing the user
-            // could go and assign. Naming ⌘⇧A here told a Windows user to press
+            // could go and assign. Naming ⌃⌘S here told a Windows user to press
             // a key their keyboard does not have, for a feature that is not in
             // this build. Same rule as `UnsupportedLoginItem`: present and
             // honest beats absent, and beats a control that lies.
@@ -1198,8 +1198,12 @@ fn main() {
                         spawn_read_region(rt);
                     } else if event.id() == "services_settings" {
                         // Deep link to Keyboard Shortcuts → Services. The Service's own
-                        // ⌘⇧A already works; this is for users who want to change it or
-                        // whose ⌘⇧A collides with Chrome or Xcode.
+                        // ⌃⌘S already works; this is for users who want to change it, or
+                        // whose own apps happen to claim that chord. A Service key
+                        // equivalent LOSES to an app's own menu item and competes with
+                        // other Services, so no default is collision-proof — which is
+                        // why this deep link exists rather than a promise. See the
+                        // Info.plist comment for why ⌃⌘S replaced ⌘⇧A.
                         if let Err(e) = open_system_shortcuts_pane() {
                             aloud::log_line!(
                                 "services_settings: could not open System Settings: {e}"
@@ -1387,12 +1391,12 @@ fn main() {
             }
 
             // Pause/resume has no global hotkey of its own, deliberately.
-            // ⌘⇧A already pauses and resumes the read it started (see
+            // ⌃⌘S already pauses and resumes the read it started (see
             // `intent::decide_selection`), so a second chord would be
             // redundant surface — and the one it had, ⌘⇧P, is VS Code's
             // Command Palette, which a non-exclusive global hotkey wins
             // while Aloud runs. The tray's Pause/Resume item stays as the
-            // fallback for the case ⌘⇧A cannot cover: macOS will not
+            // fallback for the case ⌃⌘S cannot cover: macOS will not
             // invoke a Service with nothing selected.
 
             // The selection path is a macOS Service, not a hotkey we own:
@@ -1767,7 +1771,7 @@ mod pause_label_tests {
 
     #[test]
     fn advertises_no_chord() {
-        // Pause has no global hotkey. Naming ⌘⇧A here would be a lie in
+        // Pause has no global hotkey. Naming ⌃⌘S here would be a lie in
         // exactly the case this item exists for — nothing selected, so
         // macOS will not invoke the Service and the chord cannot fire.
         for label in [pause_label(false), pause_label(true)] {

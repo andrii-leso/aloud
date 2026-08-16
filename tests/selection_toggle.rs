@@ -1,4 +1,4 @@
-//! ⌘⇧A is a selection-aware play/pause toggle, not a plain "read this".
+//! ⌃⌘S is a selection-aware play/pause toggle, not a plain "read this".
 //!
 //! The Service hands Aloud the selected text on **every** invocation, so
 //! the delivered text is itself the intent signal: the same text again
@@ -552,7 +552,7 @@ fn a_selection_arriving_during_a_region_read_takes_over() {
     assert_eq!(
         outcome,
         SelectionOutcome::Spoke { replaced: true },
-        "⌘⇧A during a region read must interrupt it and read the selection \
+        "⌃⌘S during a region read must interrupt it and read the selection \
          - and must not deadlock against the busy flag waiting for it"
     );
 
@@ -765,7 +765,7 @@ fn stop_then_the_same_selection_starts_a_fresh_read_rather_than_toggling() {
     // thread does not notice until it leaves `engine.synthesize()` — up
     // to 15s on a loaded machine (CLAUDE.md constraint 5) — and it holds
     // the busy flag and `current` for all of it. If `current` survives
-    // the stop, the user's natural next move (tray → Stop, then ⌘⇧A with
+    // the stop, the user's natural next move (tray → Stop, then ⌃⌘S with
     // the same passage still highlighted, to start it over) is decided as
     // TogglePause and swallowed: nothing is read, nothing is reported,
     // and the tray flips to "Resume" for a read that is already dead.
@@ -798,7 +798,7 @@ fn stop_then_the_same_selection_starts_a_fresh_read_rather_than_toggling() {
     assert_eq!(
         outcome,
         SelectionOutcome::Spoke { replaced: false },
-        "⌘⇧A after a Stop must start a fresh read, not toggle pause on a \
+        "⌃⌘S after a Stop must start a fresh read, not toggle pause on a \
          read that has already been silenced"
     );
 
@@ -819,13 +819,13 @@ fn stop_then_the_same_selection_starts_a_fresh_read_rather_than_toggling() {
 #[test]
 fn a_press_during_the_silent_pre_roll_is_not_taken_as_a_pause() {
     // Time-to-first-audio is seconds, and wholly load-dependent
-    // (CLAUDE.md constraint 5). A user who hears nothing and presses ⌘⇧A
+    // (CLAUDE.md constraint 5). A user who hears nothing and presses ⌃⌘S
     // again is in the pre-roll, where `Player::speak` has already set
     // `speaking` but nothing has reached the sink. Accepting that as a
     // pause parks the read forever: the first buffer lands in a paused
     // sink, `wait_for_drain` sits on a frozen depth, and `StallWatch`
     // deliberately never fires while paused — so the busy flag is held
-    // for good and ⌘⇧R goes dead too. Before ⌘⇧A became a toggle, the
+    // for good and ⌘⇧R goes dead too. Before ⌃⌘S became a toggle, the
     // same double-press was a harmless no-op.
     let Rig { app, engine, sink } = rig();
     engine.hold();

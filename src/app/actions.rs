@@ -43,7 +43,7 @@ pub enum Outcome {
     /// Text was normalized, a language was detected, and `Player::speak`
     /// ran to the end of the passage.
     Spoke,
-    /// Speaking began but a `stop()` cut it short — a ⌘⇧A takeover, or the
+    /// Speaking began but a `stop()` cut it short — a ⌃⌘S takeover, or the
     /// tray's Stop. Not an error (the stop was asked for), but not
     /// `Spoke` either: reporting it as `Spoke` had the displaced read log
     /// "completed" and reset the tray status while its replacement was

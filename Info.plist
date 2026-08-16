@@ -24,12 +24,48 @@
 
        NSKeyEquivalent's "default" value uses NSMenuItem's modifier-mask
        shorthand, one character per modifier, prefixed to the key:
-       @ = Command, $ = Shift, ~ = Option, ^ = Control. "$@a" is
-       Cmd+Shift+A. This is the ONLY way to give a Service a default
+       @ = Command, $ = Shift, ~ = Option, ^ = Control. "^@s" is
+       Ctrl+Cmd+S. This is the ONLY way to give a Service a default
        shortcut without Accessibility permission — see README.md
        "Permissions" for why Accessibility is avoided entirely. The user
        can override this (or clear it) in System Settings -> Keyboard ->
-       Keyboard Shortcuts -> Services. -->
+       Keyboard Shortcuts -> Services.
+
+       WHY Ctrl+Cmd+S, changed 2026-08-16 from "$@a" (Cmd+Shift+A).
+       Cmd+Shift+A collided with TWO things from the very first commit,
+       and shipped that way for a week:
+
+         - Terminal's built-in "Search man Page Index in Terminal"
+           Service, whose NSKeyEquivalent is the bare letter "A" (read
+           back live with `/System/Library/CoreServices/pbs
+           -dump_pboard`). Two Services claiming one chord; which wins is
+           undefined. Its NSRequiredContext is NSWordLimit=20, so it only
+           competes for SHORT selections — which is why the failure
+           looked intermittent rather than total.
+         - Google Chrome's own "Search Tabs" menu item. An app's own key
+           equivalent beats a Service's, so in Chrome the Service was
+           simply unreachable by chord (the Services *menu* still worked).
+
+       Ctrl+Cmd was chosen as a family, not just a letter, and checked
+       rather than assumed: macOS claims no Ctrl+Cmd+letter system-wide
+       (`defaults read com.apple.symbolichotkeys` — every Control entry
+       is a function key or arrow), and the Claude desktop app's entire
+       accelerator table contains no Ctrl+Cmd binding at all. Chrome's
+       Mac shortcuts live in Cmd / Shift+Cmd / Opt+Cmd and it does not
+       use Ctrl+Cmd. Verified working in Chrome, Notes and Claude before
+       shipping.
+
+       The letter A was deliberately abandoned rather than re-modified:
+       Ctrl+Shift+A ALSO reached Terminal's man-page Service, which a
+       strict modifier match does not explain. Rather than bet the app's
+       main gesture on a mechanism we do not model correctly, the letter
+       moved too. S is for Speak.
+
+       NOTE the default is only a default. A user override lives in
+       NSServicesStatus in ~/Library/Preferences/pbs.plist and WINS over
+       this file, and macOS never notifies the app that it changed — so
+       anything rendering this chord in the UI must read the live value,
+       not hardcode it. -->
   <key>NSServices</key>
   <array>
     <dict>
@@ -49,7 +85,7 @@
       <key>NSSendTypes</key>
       <array><string>public.utf8-plain-text</string></array>
       <key>NSKeyEquivalent</key>
-      <dict><key>default</key><string>$@a</string></dict>
+      <dict><key>default</key><string>^@s</string></dict>
     </dict>
   </array>
 </dict>

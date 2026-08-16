@@ -16,10 +16,10 @@ Two ways to trigger it:
   `Escape` to cancel a selection; nothing happens, nothing is spoken.
 - **Selection Service** — select text in any app, then right-click →
   **Services → Read Aloud** (or use the Services menu under the app's own
-  menu), or press **Cmd+Shift+A**. This route never touches Accessibility
+  menu), or press **Ctrl+Cmd+S**. This route never touches Accessibility
   or the clipboard — see "Permissions" below for why.
 
-`Cmd+Shift+A` is a play/pause toggle, not just a "read this":
+`Ctrl+Cmd+S` is a play/pause toggle, not just a "read this":
 
 | you press it… | what happens |
 |---|---|
@@ -47,14 +47,14 @@ from the exact sample, with nothing re-read and nothing already
 synthesised thrown away.
 
 The tray's **Pause** / **Resume** item does the same thing, and it is
-there for the case the key cannot cover. `Cmd+Shift+A` reaches Aloud as a
+there for the case the key cannot cover. `Ctrl+Cmd+S` reaches Aloud as a
 macOS Service, and macOS does not invoke a Service with nothing selected
 — so if you have clicked away and lost the selection, the tray item is
 how you pause. It reads **Resume** exactly while playback is paused,
 whichever of the two paused it.
 
 There is no separate pause chord. There was one, `Cmd+Shift+P`, before
-`Cmd+Shift+A` became a toggle; it was removed as redundant — and it
+`Ctrl+Cmd+S` became a toggle; it was removed as redundant — and it
 collided with VS Code's Command Palette, which a global hotkey wins while
 Aloud is running.
 
@@ -81,21 +81,56 @@ The region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
 below.
 
-Cmd+Shift+A is Aloud's default shortcut for the Service, shipped in
+`Ctrl+Cmd+S` is Aloud's default shortcut for the Service, shipped in
 `Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
 Settings → Keyboard → Keyboard Shortcuts → Services**, under the Text
-category. **Known conflict:** some apps bind Cmd+Shift+A themselves —
-Chrome's tab search and Xcode both do. A Services shortcut takes
-precedence while Aloud is running, so in those apps Cmd+Shift+A triggers
-Read Aloud instead of the app's own binding; rebind one of the two in
-System Settings if that collides with your workflow.
+category.
+
+**A Service shortcut is not a global hotkey, and it does not win.** This is
+the one thing to understand about it, and it is the opposite of how
+`Cmd+Shift+R` behaves. The region hotkey is registered with the window
+server, so the OS takes the keystroke before any app sees it — that is why
+it works in Chrome even though Chrome binds `Cmd+Shift+R` to hard-reload.
+A Service shortcut is a *menu* shortcut that macOS injects into every app's
+Services menu, so **any app that binds the same chord to its own menu item
+takes it instead**, and any *other* Service claiming that chord competes
+with Aloud for it.
+
+Both of those bit the shipped default before 2026-08-16, when it was
+`Cmd+Shift+A`:
+
+- **Chrome** binds `Cmd+Shift+A` to Search Tabs, so in Chrome the chord
+  never reached Aloud at all. (Right-click → Services → Read Aloud still
+  worked — only the chord was intercepted.)
+- **Terminal** ships a built-in Service, "Search man Page Index in
+  Terminal", whose key equivalent is the bare letter `A`. Two Services
+  claiming one chord, and which one wins is undefined. Its
+  `NSRequiredContext` is `NSWordLimit=20`, so it only competed for *short*
+  selections — which made the failure look random rather than consistent.
+
+`Ctrl+Cmd+S` was picked to avoid that whole class rather than to dodge one
+app: macOS claims no `Ctrl+Cmd`+letter combination system-wide, and neither
+Chrome nor the Claude desktop app uses `Ctrl+Cmd` for anything. You can
+inspect what every Service on your own machine claims with
+`/System/Library/CoreServices/pbs -dump_pboard`.
+
+**If you rebind it, quit and reopen the apps you want it to work in.** Apps
+build their Services menu when they launch and cache it, so a running app
+keeps using the old chord and the new one silently does nothing. Restarting
+the app fixes it; `/System/Library/CoreServices/pbs -flush` does too.
+
+**If the chord does nothing, check the text is still selected.** macOS will
+not invoke a Service without a live selection, so anything that clears the
+selection — including a stray keystroke the app interprets as a command —
+leaves the chord dead until you select again. Aloud cannot warn you about
+this: it is never called, so it does not know it was wanted.
 
 Aloud lives in the menubar only: no Dock icon, and no window until you
 open one yourself. Use the tray icon to trigger a region read, pause or
 resume it, stop whatever is currently speaking, open **Settings…**, or
 quit. The Pause item names what the click will do, not the state it is
 in: it reads **Resume** exactly while playback is paused, whether it was
-`Cmd+Shift+A` or the item itself that paused it.
+`Ctrl+Cmd+S` or the item itself that paused it.
 
 ## Permissions
 
@@ -114,7 +149,7 @@ Service (`NSServices`): the system hands Aloud the selected text
 directly when you choose Services → Read Aloud, with no Accessibility
 grant and no clipboard use at all. `NSServices` also supports
 `NSKeyEquivalent`, which is how Aloud ships a default shortcut
-(Cmd+Shift+A) for the Service without needing Accessibility at all — see
+(Ctrl+Cmd+S) for the Service without needing Accessibility at all — see
 above.
 
 If a permission problem (or another failure on the hotkey path — OCR
@@ -145,7 +180,7 @@ empirical confirmation, not an availability check — a check isn't
 possible here. If nothing happens within 10 seconds, the shortcut is
 probably reserved elsewhere; try a different one.
 
-**Selection shortcut.** `Cmd+Shift+A` is not rebindable in the settings
+**Selection shortcut.** `Ctrl+Cmd+S` is not rebindable in the settings
 window, because it isn't Aloud's to rebind — it's a macOS Service
 shortcut (see "Permissions" above), and it already works with no setup:
 `Info.plist` ships it as the Service's `NSKeyEquivalent`. The tray's
@@ -173,7 +208,7 @@ voice stays a male voice.
 **Launch at login.** Off by default. Switching it on registers the app
 bundle with macOS through `SMAppService` (13.0+), so macOS launches Aloud
 at login the same way Finder would — through LaunchServices, which is what
-registers the Service that `Cmd+Shift+A` depends on. (A LaunchAgent
+registers the Service that `Ctrl+Cmd+S` depends on. (A LaunchAgent
 pointing at the inner `Contents/MacOS/aloud` executable would launch the
 same binary and silently lose the Service; that is why
 `tauri-plugin-autostart` is not used here.)
@@ -394,15 +429,15 @@ indication that the thing you pointed at was withheld.
   flight — including a paused one.** A second `Cmd+Shift+R` that lands
   while a read is under way is dropped with no notification, the same as a
   deliberate cancel, and a *paused* read is still a read in flight (a
-  state `Cmd+Shift+A` makes easy to reach). The region hotkey carries no
+  state `Ctrl+Cmd+S` makes easy to reach). The region hotkey carries no
   text, so Aloud cannot tell a deliberate re-trigger from a stray
   double-press, and interrupting on a stray press would be worse. To get
   out of it, Stop from the tray, or resume and let it finish.
-  `Cmd+Shift+A` is different: it carries the selection, so a second press
+  `Ctrl+Cmd+S` is different: it carries the selection, so a second press
   is a pause or a new read rather than nothing (see the table above).
 - **Reading a selection made inside the Settings window hides that
   window.** macOS activates Aloud whenever it delivers a selection to
   the Service, so Aloud hands activation straight back — otherwise every
-  ⌘⇧A would pull focus off whatever you were reading. It gives focus
+  ⌃⌘S would pull focus off whatever you were reading. It gives focus
   back by hiding itself, which also hides the Settings window if it
   happened to be open. Reopen it from the menu bar; nothing is lost.

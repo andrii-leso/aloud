@@ -18,7 +18,7 @@
 //!   holds here: the region hotkey delivers no text, so a second press is
 //!   indistinguishable from a stray double-press, and acting on it would
 //!   interrupt whatever the user is already listening to.
-//! - **Selection (⌘⇧A): decided from the delivered text.** The selection
+//! - **Selection (⌃⌘S): decided from the delivered text.** The selection
 //!   path is a macOS Service, so *every* invocation hands us the selected
 //!   text — which means a repeat and a genuine "read this instead" are
 //!   distinguishable after all, and the old blanket no-op was answering
@@ -87,7 +87,7 @@ const ACQUIRE_POLL: Duration = Duration::from_millis(5);
 
 /// What a selection delivery actually did.
 ///
-/// Three outcomes rather than the old `bool`, because ⌘⇧A now has three
+/// Three outcomes rather than the old `bool`, because ⌃⌘S now has three
 /// honest answers and the caller logs (and, for a toggle, re-renders the
 /// tray from) which one happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub enum SelectionOutcome {
     /// different read was stopped to make room for it.
     Spoke { replaced: bool },
     /// The delivered text started being read but was itself cut short —
-    /// by a later ⌘⇧A takeover, or by the tray's Stop. `replaced` carries
+    /// by a later ⌃⌘S takeover, or by the tray's Stop. `replaced` carries
     /// the same meaning as on `Spoke`.
     ///
     /// Distinct from `Spoke` on purpose: a displaced read used to report
@@ -194,9 +194,9 @@ impl App {
     /// sink at once, but the reading thread does not notice until it
     /// leaves `engine.synthesize()` — 7-15s on a loaded machine, per
     /// CLAUDE.md constraint 5 — and it holds the busy flag, and `current`,
-    /// for all of that time. Leaving `current` set means a ⌘⇧A on the same
+    /// for all of that time. Leaving `current` set means a ⌃⌘S on the same
     /// passage during that window is decided as `TogglePause` and
-    /// swallowed: tray → Stop, then ⌘⇧A to start it again, does nothing at
+    /// swallowed: tray → Stop, then ⌃⌘S to start it again, does nothing at
     /// all except flip the tray to "Resume" for a read that is already
     /// dead. Clearing it makes the press an ordinary `Speak`, which then
     /// simply waits for the dying read to let go of the flag.
@@ -307,7 +307,7 @@ impl App {
         // trades a live passage for silence: `normalize_ocr` drops every
         // short all-digit block once a selection has more than one
         // paragraph, so `"42\n\n"` or `"2024\n\n2025"` is a delivery the
-        // Service accepts and the normalizer empties. Before ⌘⇧A became a
+        // Service accepts and the normalizer empties. Before ⌃⌘S became a
         // toggle that press was a harmless no-op; the regression would be
         // the silencing, reported as `Spoke { replaced: true }`.
         let Some(normalized) = actions::speakable_selection(text) else {
@@ -401,7 +401,7 @@ impl App {
     /// displaced passage then plays out in full while this call sits on
     /// the busy flag, and if it outlasts `TAKEOVER_WAIT` the selection the
     /// user actually asked for is dropped: "I selected new text, pressed
-    /// ⌘⇧A, and it just kept reading the old passage." Re-asserting puts
+    /// ⌃⌘S, and it just kept reading the old passage." Re-asserting puts
     /// the flag back within one poll, and every iteration of
     /// `Player::run`/`wait_for_drain` checks it.
     ///
