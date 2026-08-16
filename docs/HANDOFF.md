@@ -1,25 +1,37 @@
-# Aloud — session handoff, 2026-08-10
+# Aloud — current state
 
-Rewritten at the end of the two days that built M4 (settings window, rebindable region
-shortcut, live voice/speed) and then, in one run, launch-at-login, real pause/resume, and
-⌥⇧⌘A as a selection-aware play/pause toggle. It replaces the 2026-08-09 post-M4 handoff;
-the parts of that file still worth having are folded in below.
+**Read this before changing anything.** It is the working-state document: what is built, what
+is verified, what is merely believed, and which questions are already settled so they do not
+get re-litigated. It is deliberately blunt about the difference between "covered by tests" and
+"a human has actually seen it work" — that distinction has cost this project real time twice.
 
-**Updated 2026-08-11 (from the PC): the Windows prototype in §5 is BUILT.** That section
-described it as the next goal; it now records what shipped. §1 and §4 were corrected in the
-same pass. Everything else in this file is still the 2026-08-10 macOS handoff and was not
-re-verified from Windows.
+It is also how the project moves between the two machines it is developed on. The macOS half is
+built and verified on an M1 Air; the Windows half cannot be compiled there at all (WinRT
+bindings do not build on macOS — `CLAUDE.md` hard constraint 7) and is built on a separate
+Windows PC. This file travels with the repo, so `git pull` is the handoff.
 
-Read `CLAUDE.md` first — it is short and it carries the hard constraints. Then this file,
-then whichever `docs/` record matches what you are touching.
+Read `CLAUDE.md` first — it is short and it carries the hard constraints. Then this file, then
+whichever `docs/` record matches what you are touching. Dated records under `docs/` are
+implementation history: they keep their original text and carry dated banners when they are
+superseded, so a wrong prediction stays visible next to what actually happened.
+
+**Last substantive update: 2026-08-16**, when the Windows port was merged to `main` and first
+compiled and tested on a Mac. §5 records what the port landed. Sections not marked otherwise
+are the 2026-08-10 macOS state and were not re-verified from Windows.
 
 ---
 
 ## 1. What works
 
 macOS is complete. **Windows now reads a dragged region and speaks it** (§5).
-`cargo test --release` on Windows is **198 passed, 0 failed, 3 ignored**, measured
-2026-08-11; the macOS total moved when the port landed and has not been re-measured there.
+`cargo test --release` is **194 passed / 0 failed / 3 ignored on macOS** (M1 Air,
+2026-08-16) and **202 / 0 / 3 on Windows** (2026-08-11). The two differ legitimately: the
+Windows-only capture and overlay tests do not exist on macOS, and the accelerator tests are
+`#[cfg]`-split per platform. **Treat the Windows figure as "green with one known
+intermittent"** — `tests/engine_speed_pin.rs` flaked roughly one run in four there. It does
+not flake on macOS at all: 10 consecutive runs came back with a delta of exactly 0 and
+byte-identical sample counts, so the cause is Windows-side and undiagnosed. See
+`BKM/PC-Queue/TASK-M6b-aloud-speed-pin-flake.md`.
 
 The repo is on GitHub (private, `andrii-leso/aloud`) and has CI —
 `.github/workflows/ci.yml`, now **macOS and Windows**, and its header is worth reading before
@@ -162,9 +174,11 @@ stay commented out — are both resolved and are gone.
 **All three prototype criteria pass.** Tray icon and menu; region capture → OCR → speech on
 `Ctrl+Shift+R`; survives a restart.
 
-**`m6-windows-prep` is 0 behind `main` and 14 ahead.** `main` is an ancestor, so merging is a
-fast-forward with no conflicts. It touches 18 files the macOS build compiles and **has never
-been compiled on a Mac** — build it there before merging, not after.
+**MERGED to `main` on 2026-08-16, and the gate this paragraph used to set is cleared.** It
+warned that the branch touched 18 files the macOS build compiles and had never been compiled
+on a Mac. It has now been: `cargo check --all-targets --locked` clean, and the full release
+suite **189 passed / 0 failed / 3 ignored** with zero warnings, before the fast-forward. The
+branch is redundant and can be deleted.
 
 What landed, beyond the stubs:
 
