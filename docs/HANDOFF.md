@@ -21,7 +21,7 @@ macOS is complete. **Windows now reads a dragged region and speaks it** (§5).
 `cargo test --release` on Windows is **198 passed, 0 failed, 3 ignored**, measured
 2026-08-11; the macOS total moved when the port landed and has not been re-measured there.
 
-The repo is on GitHub (private, `AndrewRise/aloud`) and has CI —
+The repo is on GitHub (private, `andrii-leso/aloud`) and has CI —
 `.github/workflows/ci.yml`, now **macOS and Windows**, and its header is worth reading before
 you trust a tick. Each job runs everything that needs neither the 385 MB model nor a real
 device. **The seven it cannot run include the engine-speed pin and the latency ratio** — the
