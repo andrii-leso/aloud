@@ -16,10 +16,10 @@ Two ways to trigger it:
   `Escape` to cancel a selection; nothing happens, nothing is spoken.
 - **Selection Service** — select text in any app, then right-click →
   **Services → Read Aloud** (or use the Services menu under the app's own
-  menu), or press **Ctrl+Cmd+S**. This route never touches Accessibility
+  menu), or press **Opt+Shift+Cmd+A**. This route never touches Accessibility
   or the clipboard — see "Permissions" below for why.
 
-`Ctrl+Cmd+S` is a play/pause toggle, not just a "read this":
+`Opt+Shift+Cmd+A` is a play/pause toggle, not just a "read this":
 
 | you press it… | what happens |
 |---|---|
@@ -47,14 +47,14 @@ from the exact sample, with nothing re-read and nothing already
 synthesised thrown away.
 
 The tray's **Pause** / **Resume** item does the same thing, and it is
-there for the case the key cannot cover. `Ctrl+Cmd+S` reaches Aloud as a
+there for the case the key cannot cover. `Opt+Shift+Cmd+A` reaches Aloud as a
 macOS Service, and macOS does not invoke a Service with nothing selected
 — so if you have clicked away and lost the selection, the tray item is
 how you pause. It reads **Resume** exactly while playback is paused,
 whichever of the two paused it.
 
 There is no separate pause chord. There was one, `Cmd+Shift+P`, before
-`Ctrl+Cmd+S` became a toggle; it was removed as redundant — and it
+`Opt+Shift+Cmd+A` became a toggle; it was removed as redundant — and it
 collided with VS Code's Command Palette, which a global hotkey wins while
 Aloud is running.
 
@@ -81,7 +81,7 @@ The region shortcut and the voice/speed the app reads with are
 configurable from the tray's **Settings…** window — see "Settings"
 below.
 
-`Ctrl+Cmd+S` is Aloud's default shortcut for the Service, shipped in
+`Opt+Shift+Cmd+A` is Aloud's default shortcut for the Service, shipped in
 `Info.plist` (`NSKeyEquivalent`). Change or clear it any time in **System
 Settings → Keyboard → Keyboard Shortcuts → Services**, under the Text
 category.
@@ -108,11 +108,21 @@ Both of those bit the shipped default before 2026-08-16, when it was
   `NSRequiredContext` is `NSWordLimit=20`, so it only competed for *short*
   selections — which made the failure look random rather than consistent.
 
-`Ctrl+Cmd+S` was picked to avoid that whole class rather than to dodge one
-app: macOS claims no `Ctrl+Cmd`+letter combination system-wide, and neither
-Chrome nor the Claude desktop app uses `Ctrl+Cmd` for anything. You can
-inspect what every Service on your own machine claims with
-`/System/Library/CoreServices/pbs -dump_pboard`.
+`Opt+Shift+Cmd+A` was picked to avoid that whole class rather than to dodge
+one app. macOS claims no `Shift+Option+Command+A` system-wide — though it
+does claim `Shift+Option+Command+S`, so the letter mattered — the Claude
+desktop app binds nothing on `Shift+Option+Command`, and no other Service
+claims it. You can inspect what every Service on your own machine claims
+with `/System/Library/CoreServices/pbs -dump_pboard`.
+
+Three modifiers rather than two is also deliberate. A two-modifier chord
+has a one-key slip to a neighbouring modifier, and on this path a slip is
+not harmless: it can leave the frontmost app no longer offering its
+selection while the text stays *visibly* highlighted, so the next correct
+press does nothing and there is no way to see why. Three modifiers are
+pressed as a cluster, so the likely slip is dropping one — and dropping
+Option here gives `Cmd+Shift+A`, which visibly does something else rather
+than failing silently. A wrong action you can see beats one you cannot.
 
 **If you rebind it, quit and reopen the apps you want it to work in.** Apps
 build their Services menu when they launch and cache it, so a running app
@@ -130,7 +140,7 @@ open one yourself. Use the tray icon to trigger a region read, pause or
 resume it, stop whatever is currently speaking, open **Settings…**, or
 quit. The Pause item names what the click will do, not the state it is
 in: it reads **Resume** exactly while playback is paused, whether it was
-`Ctrl+Cmd+S` or the item itself that paused it.
+`Opt+Shift+Cmd+A` or the item itself that paused it.
 
 ## Permissions
 
@@ -149,7 +159,7 @@ Service (`NSServices`): the system hands Aloud the selected text
 directly when you choose Services → Read Aloud, with no Accessibility
 grant and no clipboard use at all. `NSServices` also supports
 `NSKeyEquivalent`, which is how Aloud ships a default shortcut
-(Ctrl+Cmd+S) for the Service without needing Accessibility at all — see
+(Opt+Shift+Cmd+A) for the Service without needing Accessibility at all — see
 above.
 
 If a permission problem (or another failure on the hotkey path — OCR
@@ -180,7 +190,7 @@ empirical confirmation, not an availability check — a check isn't
 possible here. If nothing happens within 10 seconds, the shortcut is
 probably reserved elsewhere; try a different one.
 
-**Selection shortcut.** `Ctrl+Cmd+S` is not rebindable in the settings
+**Selection shortcut.** `Opt+Shift+Cmd+A` is not rebindable in the settings
 window, because it isn't Aloud's to rebind — it's a macOS Service
 shortcut (see "Permissions" above), and it already works with no setup:
 `Info.plist` ships it as the Service's `NSKeyEquivalent`. The tray's
@@ -208,7 +218,7 @@ voice stays a male voice.
 **Launch at login.** Off by default. Switching it on registers the app
 bundle with macOS through `SMAppService` (13.0+), so macOS launches Aloud
 at login the same way Finder would — through LaunchServices, which is what
-registers the Service that `Ctrl+Cmd+S` depends on. (A LaunchAgent
+registers the Service that `Opt+Shift+Cmd+A` depends on. (A LaunchAgent
 pointing at the inner `Contents/MacOS/aloud` executable would launch the
 same binary and silently lose the Service; that is why
 `tauri-plugin-autostart` is not used here.)
@@ -429,15 +439,15 @@ indication that the thing you pointed at was withheld.
   flight — including a paused one.** A second `Cmd+Shift+R` that lands
   while a read is under way is dropped with no notification, the same as a
   deliberate cancel, and a *paused* read is still a read in flight (a
-  state `Ctrl+Cmd+S` makes easy to reach). The region hotkey carries no
+  state `Opt+Shift+Cmd+A` makes easy to reach). The region hotkey carries no
   text, so Aloud cannot tell a deliberate re-trigger from a stray
   double-press, and interrupting on a stray press would be worse. To get
   out of it, Stop from the tray, or resume and let it finish.
-  `Ctrl+Cmd+S` is different: it carries the selection, so a second press
+  `Opt+Shift+Cmd+A` is different: it carries the selection, so a second press
   is a pause or a new read rather than nothing (see the table above).
 - **Reading a selection made inside the Settings window hides that
   window.** macOS activates Aloud whenever it delivers a selection to
   the Service, so Aloud hands activation straight back — otherwise every
-  ⌃⌘S would pull focus off whatever you were reading. It gives focus
+  ⌥⇧⌘A would pull focus off whatever you were reading. It gives focus
   back by hiding itself, which also hides the Settings window if it
   happened to be open. Reopen it from the menu bar; nothing is lost.

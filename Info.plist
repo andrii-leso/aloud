@@ -24,14 +24,14 @@
 
        NSKeyEquivalent's "default" value uses NSMenuItem's modifier-mask
        shorthand, one character per modifier, prefixed to the key:
-       @ = Command, $ = Shift, ~ = Option, ^ = Control. "^@s" is
-       Ctrl+Cmd+S. This is the ONLY way to give a Service a default
+       @ = Command, $ = Shift, ~ = Option, ^ = Control. "$~@a" is
+       Shift+Option+Command+A. This is the ONLY way to give a Service a default
        shortcut without Accessibility permission — see README.md
        "Permissions" for why Accessibility is avoided entirely. The user
        can override this (or clear it) in System Settings -> Keyboard ->
        Keyboard Shortcuts -> Services.
 
-       WHY Ctrl+Cmd+S, changed 2026-08-16 from "$@a" (Cmd+Shift+A).
+       WHY Opt+Shift+Cmd+A, changed 2026-08-16 from "$@a" (Cmd+Shift+A).
        Cmd+Shift+A collided with TWO things from the very first commit,
        and shipped that way for a week:
 
@@ -46,20 +46,36 @@
            equivalent beats a Service's, so in Chrome the Service was
            simply unreachable by chord (the Services *menu* still worked).
 
-       Ctrl+Cmd was chosen as a family, not just a letter, and checked
-       rather than assumed: macOS claims no Ctrl+Cmd+letter system-wide
-       (`defaults read com.apple.symbolichotkeys` — every Control entry
-       is a function key or arrow), and the Claude desktop app's entire
-       accelerator table contains no Ctrl+Cmd binding at all. Chrome's
-       Mac shortcuts live in Cmd / Shift+Cmd / Opt+Cmd and it does not
-       use Ctrl+Cmd. Verified working in Chrome, Notes and Claude before
-       shipping.
+       Three modifiers, chosen for ERGONOMICS as much as availability.
+       Ctrl+Cmd+S was tried first and rejected on a real defect found by
+       using it: Option sits next to Command, so Ctrl+Cmd+S has a
+       one-key slip to Ctrl+Option+S — and that slip does not fail
+       harmlessly. It leaves the frontmost app no longer offering its
+       selection to the Services system while the text stays VISIBLY
+       highlighted, so the next correct press does nothing at all, with
+       no way for the user to see why. A three-modifier chord is pressed
+       as a cluster, so the likely slip is dropping a modifier rather
+       than substituting a neighbouring key.
 
-       The letter A was deliberately abandoned rather than re-modified:
-       Ctrl+Shift+A ALSO reached Terminal's man-page Service, which a
-       strict modifier match does not explain. Rather than bet the app's
-       main gesture on a mechanism we do not model correctly, the letter
-       moved too. S is for Speak.
+       Availability checked rather than assumed, three sources:
+         - macOS claims no Shift+Option+Command+A system-wide. It DOES
+           claim Shift+Option+Command+S (`defaults read
+           com.apple.symbolichotkeys`), so the letter mattered here.
+         - The Claude desktop app's entire accelerator table contains no
+           Shift+Option+Command binding, extracted from its bundle.
+         - No other Service claims it (`pbs -dump_pboard`).
+       Then verified by hand in Chrome, Notes and Claude before shipping.
+
+       The letter A is kept, and that is a deliberate reversal. It was
+       abandoned briefly because Ctrl+Shift+A ALSO reached Terminal's
+       man-page Service, which a strict modifier match does not explain.
+       But Ctrl+Option+Command+A was then measured working cleanly in
+       Chrome, which shows the letter is not cursed — only the
+       two-modifier chords around it were contested. A is worth keeping:
+       it is the mnemonic, and the slip that drops Option yields
+       Cmd+Shift+A, which visibly does something else (tab search, or a
+       man page) rather than failing silently. A visible wrong action is
+       a better failure than an invisible one.
 
        NOTE the default is only a default. A user override lives in
        NSServicesStatus in ~/Library/Preferences/pbs.plist and WINS over
@@ -85,7 +101,7 @@
       <key>NSSendTypes</key>
       <array><string>public.utf8-plain-text</string></array>
       <key>NSKeyEquivalent</key>
-      <dict><key>default</key><string>^@s</string></dict>
+      <dict><key>default</key><string>$~@a</string></dict>
     </dict>
   </array>
 </dict>

@@ -2,7 +2,7 @@
 
 Rewritten at the end of the two days that built M4 (settings window, rebindable region
 shortcut, live voice/speed) and then, in one run, launch-at-login, real pause/resume, and
-⌃⌘S as a selection-aware play/pause toggle. It replaces the 2026-08-09 post-M4 handoff;
+⌥⇧⌘A as a selection-aware play/pause toggle. It replaces the 2026-08-09 post-M4 handoff;
 the parts of that file still worth having are folded in below.
 
 **Updated 2026-08-11 (from the PC): the Windows prototype in §5 is BUILT.** That section
@@ -32,15 +32,15 @@ cannot catch a missing VC++ CRT.
 | Capability | Trigger | Notes |
 |---|---|---|
 | Region read | `Cmd+Shift+R` (rebindable) | drag a rectangle → `screencapture` → Vision OCR → speech |
-| Selection read | `Ctrl+Cmd+S`, or Services → Read Aloud | a macOS **Service**: the OS hands over the text. No Accessibility, no clipboard |
-| Pause / resume | `Ctrl+Cmd+S` again, or the tray's Pause/Resume item | true mid-sentence pause; resumes at the exact sample |
+| Selection read | `Opt+Shift+Cmd+A`, or Services → Read Aloud | a macOS **Service**: the OS hands over the text. No Accessibility, no clipboard |
+| Pause / resume | `Opt+Shift+Cmd+A` again, or the tray's Pause/Resume item | true mid-sentence pause; resumes at the exact sample |
 | Stop | tray | clears the paused state too |
 | Settings window | tray → Settings… | region shortcut, voice (F5/M5), speed (0.7-2.0), launch at login |
 | Live voice/speed | settings window | applies to the running engine, no relaunch |
 | Launch at login | settings window, **default off** | `SMAppService`, not a LaunchAgent |
 | Logging | always | macOS `~/Library/Logs/Aloud/aloud.log`; Windows `%LOCALAPPDATA%\com.andriileso.aloud\logs\aloud.log` |
 
-**`Ctrl+Cmd+S` is a toggle, not a "read this."** Same text selected → pause, then resume.
+**`Opt+Shift+Cmd+A` is a toggle, not a "read this."** Same text selected → pause, then resume.
 Different text → stop and read the new passage. Nothing in flight → read it. The decision is
 a pure function over the delivered text (`src/app/intent.rs`), which is what made every
 branch unit-testable instead of testable by ear. `Cmd+Shift+R` is deliberately *not* a
@@ -48,11 +48,11 @@ toggle — it carries no text, so a re-trigger and a stray double-press are indi
 and it stays a silent no-op while a read is in flight, including a paused one.
 
 **There is no separate pause chord.** Phase 1 shipped `Cmd+Shift+P`; it was removed the same
-day, once ⌃⌘S became a toggle, as redundant surface that also collided with VS Code's
+day, once ⌥⇧⌘A became a toggle, as redundant surface that also collided with VS Code's
 Command Palette. The tray Pause/Resume item is **not** a convenience and must not be deleted:
 macOS will not invoke a Service with nothing selected, so it is the only pause control that
 works once you have clicked away and lost the selection. It carries no chord in its label,
-deliberately — naming ⌃⌘S there would be a lie in exactly that case.
+deliberately — naming ⌥⇧⌘A there would be a lie in exactly that case.
 
 **There are no media keys anywhere.** See §4.
 
@@ -89,7 +89,7 @@ follows.
 - **The current build has not been bundled or installed at all.** The pause-chord removal
   changed the tray item and the shortcut handler; nobody has since run
   `packaging/make-app.sh`, and nothing was installed over `/Applications/Aloud.app` (the
-  owner uses it). So: the tray Pause item and ⌃⌘S are unconfirmed *in the running app* since
+  owner uses it). So: the tray Pause item and ⌥⇧⌘A are unconfirmed *in the running app* since
   that commit, though both are covered below the OS boundary.
 - A real logout/login with launch-at-login switched on. Everything short of it says the
   Service will still work; nothing short of it proves it. It ships off and was left off.

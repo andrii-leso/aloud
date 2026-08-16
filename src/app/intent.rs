@@ -1,6 +1,6 @@
 //! The selection hotkey's decision, as a pure function.
 //!
-//! ⌃⌘S is a macOS **Service**, not a hotkey Aloud owns (`Info.plist`'s
+//! ⌥⇧⌘A is a macOS **Service**, not a hotkey Aloud owns (`Info.plist`'s
 //! `NSServices` entry — see `src/selection/`). That is what makes this
 //! module possible: the system hands Aloud the selected text on *every*
 //! invocation, so the delivered text is itself the intent signal.

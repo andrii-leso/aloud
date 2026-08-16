@@ -141,7 +141,7 @@ impl ServiceProvider {
 /// Aloud always gets out of the way". Skipping the hide while a window
 /// is visible would leave the *worse* variant of this bug in place —
 /// the settings window jumping in front of the user's work on every
-/// ⌃⌘S. The cost is that reading a selection made *inside* the settings
+/// ⌥⇧⌘A. The cost is that reading a selection made *inside* the settings
 /// window hides it, and it is reopened from the tray.
 ///
 /// Nothing else is affected: the status item is not an app window and

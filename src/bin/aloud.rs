@@ -133,7 +133,7 @@ struct Runtime {
     read_region_item: MenuItem<tauri::Wry>,
     /// Handle to the tray's Pause/Resume item. Its label is rendered from
     /// `App::is_paused()` — see `refresh_pause_label`. This item is the
-    /// only pause control that works with no selection: ⌃⌘S pauses too,
+    /// only pause control that works with no selection: ⌥⇧⌘A pauses too,
     /// but it arrives as a macOS Service, and macOS will not invoke a
     /// Service with nothing selected.
     pause_item: MenuItem<tauri::Wry>,
@@ -200,7 +200,7 @@ fn set_error_status(rt: &Runtime, message: &str) {
 /// the tray status untouched — the first because a read is already
 /// underway, the second because a cancel is not a failure. A read that
 /// runs to the end resets the status to `Ready` (clearing any stale
-/// error); one that was stopped before the end — displaced by a ⌃⌘S
+/// error); one that was stopped before the end — displaced by a ⌥⇧⌘A
 /// takeover, or the tray's Stop — deliberately does not, since it did not
 /// complete and whatever replaced it will report for itself. An
 /// empty result (captured something, found no text) and any `Err` (most
@@ -228,7 +228,7 @@ fn spawn_read_region(rt: Arc<Runtime>) {
                 reset_status(&rt);
             }
             Ok(Some(Outcome::Interrupted)) => {
-                // Displaced by a ⌃⌘S takeover, or the tray's Stop.
+                // Displaced by a ⌥⇧⌘A takeover, or the tray's Stop.
                 // Deliberately does NOT reset the status: this read did
                 // not complete, and whatever replaced it is speaking now
                 // and will report for itself.
@@ -438,6 +438,125 @@ fn pretty_accelerator(accel: &str) -> String {
     out
 }
 
+/// The Service chord shipped in `Info.plist` as `NSKeyEquivalent`.
+///
+/// Keep this string and `Info.plist` in lockstep. It is only the *default*:
+/// a user override in `NSServicesStatus` wins over it, which is what
+/// [`live_service_chord`] exists to read.
+#[cfg(not(target_os = "windows"))]
+const DEFAULT_SERVICE_CHORD: &str = "$~@a";
+
+/// `"$~@a"` → `"⌥⇧⌘A"`. Display only.
+///
+/// `NSKeyEquivalent` uses `NSMenuItem`'s modifier-mask shorthand — one
+/// character per modifier, prefixed to the key — which is a *different*
+/// encoding from the `"CmdOrCtrl+Shift+R"` strings [`pretty_accelerator`]
+/// takes, hence a second formatter rather than a shared one.
+///
+/// Emitted in Apple's documented order (⌃⌥⇧⌘) rather than the order the
+/// modifiers happen to appear in, because macOS renders this same chord in
+/// its own Services menu and in System Settings, and disagreeing with the
+/// OS about a chord the user can see in two other places would be the
+/// lying-control defect in miniature.
+///
+/// A bare letter with no modifier prefix is not passed through: macOS
+/// applies the default Services modifier to it, so rendering it verbatim
+/// would show a single letter as though it were the whole chord.
+#[cfg(not(target_os = "windows"))]
+fn pretty_service_chord(raw: &str) -> String {
+    let key: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '@' | '$' | '~' | '^'))
+        .collect();
+    if key.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    if raw.contains('^') {
+        out.push('⌃');
+    }
+    if raw.contains('~') {
+        out.push('⌥');
+    }
+    if raw.contains('$') {
+        out.push('⇧');
+    }
+    if raw.contains('@') {
+        out.push('⌘');
+    }
+    if out.is_empty() {
+        // No modifier prefix: macOS supplies ⇧⌘ itself. Say so rather than
+        // rendering a lone letter that nothing would trigger.
+        out.push_str("⇧⌘");
+    }
+    out.push_str(&key.to_uppercase());
+    out
+}
+
+/// The Service chord that is *actually* in force, not the one shipped.
+///
+/// The user can rebind or clear it in System Settings → Keyboard → Keyboard
+/// Shortcuts → Services, which writes `NSServicesStatus` into
+/// `~/Library/Preferences/pbs.plist`. That override **wins** over
+/// `Info.plist`, and **macOS never notifies the app that it changed** — so a
+/// hardcoded label goes stale the moment anyone touches it, with no way for
+/// the app to find out. Hard constraint 12: render what is true.
+///
+/// `plutil -extract` rather than a plist crate: no new dependency, and the
+/// failure mode is a clean non-zero exit we can fall back from. Absent key
+/// (the common case — the file has no entry until the user overrides
+/// something) is not an error, it means "the Info.plist default is in force".
+///
+/// Read once at menu-build time. A change made while Aloud is running is
+/// picked up at next launch, which is the same behaviour every *other* app
+/// on the system has: they build their Services menu at launch and cache it,
+/// so a rebind does not reach a running app either.
+#[cfg(not(target_os = "windows"))]
+fn live_service_chord() -> String {
+    let path = match std::env::var_os("HOME") {
+        Some(h) => std::path::PathBuf::from(h).join("Library/Preferences/pbs.plist"),
+        None => return DEFAULT_SERVICE_CHORD.to_string(),
+    };
+    let key = format!(
+        "NSServicesStatus.{}.key_equivalent",
+        // plutil treats '.' as the key-path separator, so the bundle id's own
+        // dots have to be escaped or the path resolves to nothing.
+        "com\\.andriileso\\.aloud - Read Aloud - readSelection"
+    );
+    let out = std::process::Command::new("/usr/bin/plutil")
+        .args(["-extract", &key, "raw", "-o", "-"])
+        .arg(&path)
+        .output();
+    match out {
+        // An override that CLEARS the shortcut is a real state and is
+        // distinct from "no override at all", so an empty string is
+        // returned as-is rather than falling back to the default.
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => DEFAULT_SERVICE_CHORD.to_string(),
+    }
+}
+
+/// The tray's selection-item label, for a given raw Service chord.
+///
+/// Pure, so the property that matters — the label names the chord that is
+/// actually in force, and says so honestly when there is none — is testable
+/// without a tray, a plist, or a running app.
+///
+/// The cleared case is not cosmetic. A user can remove the shortcut entirely
+/// in System Settings, and the Service still works from the Services menu.
+/// Naming a chord then would be a lie; dropping the item would hide a feature
+/// that still works. So it names the route that remains.
+#[cfg(not(target_os = "windows"))]
+fn selection_menu_label(raw_chord: &str) -> String {
+    let pretty = pretty_service_chord(raw_chord);
+    if pretty.is_empty() {
+        "Read / Pause Selection  (Services menu — no shortcut set)".to_string()
+    } else {
+        format!("Read / Pause Selection  ({pretty}, or the Services menu)")
+    }
+}
+
 /// `"CmdOrCtrl+Shift+R"` → `"Ctrl+Shift+R"`. Display only.
 ///
 /// Windows has no ⌘ key and does not use glyph accelerators — the platform
@@ -625,7 +744,7 @@ fn refresh_tray_labels(app: &tauri::AppHandle, region_shortcut: &str) {
 /// tray. A "Pause" item on a paused read is the lying-control defect
 /// class this app has spent the week removing.
 ///
-/// No chord is shown. Pause has no global hotkey of its own: ⌃⌘S is the
+/// No chord is shown. Pause has no global hotkey of its own: ⌥⇧⌘A is the
 /// keyboard route (see `intent::decide_selection`), and naming it here
 /// would be a lie whenever nothing is selected, which is the one case
 /// this item exists for.
@@ -638,14 +757,14 @@ fn pause_label(paused: bool) -> String {
 /// Reads `App::is_paused()` (which reads the sink) rather than taking a
 /// bool, so no call site can hand it a stale value. Must be called after
 /// anything that can change the paused state: the tray's Pause/Resume
-/// item, the ⌃⌘S toggle, Stop, and the end of a read.
+/// item, the ⌥⇧⌘A toggle, Stop, and the end of a read.
 fn refresh_pause_label(rt: &Runtime) {
     let _ = rt.pause_item.set_text(pause_label(rt.app.is_paused()));
 }
 
 /// Toggles pause and re-syncs the tray. The tray item's only entry
 /// point, so it cannot update the state without also updating the label.
-/// The ⌃⌘S route does not come through here — it toggles inside
+/// The ⌥⇧⌘A route does not come through here — it toggles inside
 /// `App::speak_selection` and its caller refreshes the label itself.
 fn toggle_pause(rt: &Runtime) {
     let paused = rt.app.toggle_pause();
@@ -1100,7 +1219,7 @@ fn main() {
             )?;
 
             // Informational, and deliberately worded as a statement of fact rather
-            // than an instruction: ⌃⌘S already works, because Info.plist ships it as
+            // than an instruction: ⌥⇧⌘A already works, because Info.plist ships it as
             // the Service's NSKeyEquivalent. The previous label told the user to go
             // and assign it, which was untrue.
             //
@@ -1112,14 +1231,14 @@ fn main() {
             let read_selection_item = MenuItem::with_id(
                 app,
                 "read_selection_info",
-                "Read / Pause Selection  (⌃⌘S, or the Services menu)",
+                selection_menu_label(&live_service_chord()),
                 false,
                 None::<&str>,
             )?;
 
             // Windows has no Services menu and no system-mediated selection
             // channel at all, so there is no chord to name and nothing the user
-            // could go and assign. Naming ⌃⌘S here told a Windows user to press
+            // could go and assign. Naming ⌥⇧⌘A here told a Windows user to press
             // a key their keyboard does not have, for a feature that is not in
             // this build. Same rule as `UnsupportedLoginItem`: present and
             // honest beats absent, and beats a control that lies.
@@ -1198,12 +1317,12 @@ fn main() {
                         spawn_read_region(rt);
                     } else if event.id() == "services_settings" {
                         // Deep link to Keyboard Shortcuts → Services. The Service's own
-                        // ⌃⌘S already works; this is for users who want to change it, or
+                        // ⌥⇧⌘A already works; this is for users who want to change it, or
                         // whose own apps happen to claim that chord. A Service key
                         // equivalent LOSES to an app's own menu item and competes with
                         // other Services, so no default is collision-proof — which is
                         // why this deep link exists rather than a promise. See the
-                        // Info.plist comment for why ⌃⌘S replaced ⌘⇧A.
+                        // Info.plist comment for why ⌥⇧⌘A replaced ⌘⇧A.
                         if let Err(e) = open_system_shortcuts_pane() {
                             aloud::log_line!(
                                 "services_settings: could not open System Settings: {e}"
@@ -1391,12 +1510,12 @@ fn main() {
             }
 
             // Pause/resume has no global hotkey of its own, deliberately.
-            // ⌃⌘S already pauses and resumes the read it started (see
+            // ⌥⇧⌘A already pauses and resumes the read it started (see
             // `intent::decide_selection`), so a second chord would be
             // redundant surface — and the one it had, ⌘⇧P, is VS Code's
             // Command Palette, which a non-exclusive global hotkey wins
             // while Aloud runs. The tray's Pause/Resume item stays as the
-            // fallback for the case ⌃⌘S cannot cover: macOS will not
+            // fallback for the case ⌥⇧⌘A cannot cover: macOS will not
             // invoke a Service with nothing selected.
 
             // The selection path is a macOS Service, not a hotkey we own:
@@ -1585,7 +1704,68 @@ mod run_event_tests {
 /// for the other arm so neither platform loses coverage.
 #[cfg(all(test, not(target_os = "windows")))]
 mod tests {
-    use super::pretty_accelerator;
+    use super::{
+        pretty_accelerator, pretty_service_chord, selection_menu_label, DEFAULT_SERVICE_CHORD,
+    };
+
+    #[test]
+    fn the_shipped_service_chord_renders_as_shift_option_command_a() {
+        // Pins DEFAULT_SERVICE_CHORD against Info.plist's NSKeyEquivalent.
+        // If someone changes one without the other, the tray names a chord
+        // that is not the one macOS registered — silently, because nothing
+        // else compares them.
+        assert_eq!(DEFAULT_SERVICE_CHORD, "$~@a");
+        assert_eq!(pretty_service_chord(DEFAULT_SERVICE_CHORD), "⌥⇧⌘A");
+    }
+
+    #[test]
+    fn service_chord_modifiers_render_in_apples_order_not_the_strings_order() {
+        // Deliberately different from `pretty_accelerator`, which walks its
+        // input left to right. macOS renders this same chord in the Services
+        // menu and in System Settings, so the order is the OS's to dictate,
+        // not the encoding's. `$~@a` and `~$@a` are the same chord.
+        assert_eq!(pretty_service_chord("$~@a"), "⌥⇧⌘A");
+        assert_eq!(pretty_service_chord("~$@a"), "⌥⇧⌘A");
+        assert_eq!(pretty_service_chord("^$~@c"), "⌃⌥⇧⌘C");
+        assert_eq!(pretty_service_chord("@a"), "⌘A");
+    }
+
+    #[test]
+    fn a_bare_letter_gets_the_default_services_modifier_not_a_lone_key() {
+        // Terminal's built-in man-page Services use exactly this form: an
+        // NSKeyEquivalent of "A" with no modifier prefix, to which macOS
+        // applies Shift+Command. Rendering it as "A" would show a chord
+        // that does nothing on its own.
+        assert_eq!(pretty_service_chord("A"), "⇧⌘A");
+        assert_eq!(pretty_service_chord("m"), "⇧⌘M");
+    }
+
+    #[test]
+    fn a_cleared_shortcut_names_the_route_that_still_works() {
+        // Clearing the shortcut in System Settings is a real, reachable
+        // state, and the Service still works from the Services menu. The
+        // label must not invent a chord, and must not vanish.
+        assert_eq!(pretty_service_chord(""), "");
+        assert_eq!(
+            selection_menu_label(""),
+            "Read / Pause Selection  (Services menu — no shortcut set)"
+        );
+    }
+
+    #[test]
+    fn the_selection_label_names_the_live_chord() {
+        assert_eq!(
+            selection_menu_label("$~@a"),
+            "Read / Pause Selection  (⌥⇧⌘A, or the Services menu)"
+        );
+        // A user override must reach the label. This is the whole point of
+        // reading NSServicesStatus instead of hardcoding: before this, the
+        // tray said ⌘⇧A no matter what the user had actually bound.
+        assert_eq!(
+            selection_menu_label("^@s"),
+            "Read / Pause Selection  (⌃⌘S, or the Services menu)"
+        );
+    }
 
     #[test]
     fn default_region_shortcut_renders_as_the_shipped_menu_string() {
@@ -1771,7 +1951,7 @@ mod pause_label_tests {
 
     #[test]
     fn advertises_no_chord() {
-        // Pause has no global hotkey. Naming ⌃⌘S here would be a lie in
+        // Pause has no global hotkey. Naming ⌥⇧⌘A here would be a lie in
         // exactly the case this item exists for — nothing selected, so
         // macOS will not invoke the Service and the chord cannot fire.
         for label in [pause_label(false), pause_label(true)] {
