@@ -30,13 +30,14 @@ modifications must themselves be published under MPL-2.0.
 
 ## Licences in use
 
-- **MIT License** — 486 components
+- **MIT License** — 485 components
 - **Unicode License v3** — 19 components
 - **Mozilla Public License 2.0** — 17 components
 - **Apache License 2.0** — 16 components
 - **BSD 3-Clause "New" or "Revised" License** — 5 components
 - **ISC License** — 4 components
 - **Community Data License Agreement Permissive 2.0** — 2 components
+- **PolyForm Noncommercial License 1.0.0** — 1 component
 - **zlib License** — 1 component
 
 ## Full text
@@ -6005,36 +6006,6 @@ SOFTWARE.
 
 Used by:
 
-- [aloud 0.1.0](https://crates.io/crates/aloud)
-
-```text
-MIT License
-
-Copyright (c) 2025 Supertone Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### MIT License
-
-Used by:
-
 - [block2 0.6.2](https://github.com/madsmtm/objc2)
 - [brotli-decompressor 5.0.3](https://github.com/dropbox/rust-brotli-decompressor)
 - [cargo_toml 0.22.3](https://gitlab.com/lib.rs/cargo_toml)
@@ -8439,6 +8410,180 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 
   This Source Code Form is "Incompatible With Secondary Licenses", as
   defined by the Mozilla Public License, v. 2.0.
+
+```
+
+### PolyForm Noncommercial License 1.0.0
+
+Used by:
+
+- [aloud 0.1.0](https://crates.io/crates/aloud)
+
+```text
+# PolyForm Noncommercial License 1.0.0
+
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
+
+Required Notice: Copyright 2026 Andrii Leso (https://github.com/andrii-leso/aloud)
+
+## Acceptance
+
+In order to get any license under these terms, you must agree
+to them as both strict obligations and conditions to all
+your licenses.
+
+## Copyright License
+
+The licensor grants you a copyright license for the
+software to do everything you might do with the software
+that would otherwise infringe the licensor's copyright
+in it for any permitted purpose.  However, you may
+only distribute the software according to [Distribution
+License](#distribution-license) and make changes or new works
+based on the software according to [Changes and New Works
+License](#changes-and-new-works-license).
+
+## Distribution License
+
+The licensor grants you an additional copyright license
+to distribute copies of the software.  Your license
+to distribute covers distributing the software with
+changes and new works permitted by [Changes and New Works
+License](#changes-and-new-works-license).
+
+## Notices
+
+You must ensure that anyone who gets a copy of any part of
+the software from you also gets a copy of these terms or the
+URL for them above, as well as copies of any plain-text lines
+beginning with `Required Notice:` that the licensor provided
+with the software.  For example:
+
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
+
+## Changes and New Works License
+
+The licensor grants you an additional copyright license to
+make changes and new works based on the software for any
+permitted purpose.
+
+## Patent License
+
+The licensor grants you a patent license for the software that
+covers patent claims the licensor can license, or becomes able
+to license, that you would infringe by using the software.
+
+## Noncommercial Purposes
+
+Any noncommercial purpose is a permitted purpose.
+
+## Personal Uses
+
+Personal use for research, experiment, and testing for
+the benefit of public knowledge, personal study, private
+entertainment, hobby projects, amateur pursuits, or religious
+observance, without any anticipated commercial application,
+is use for a permitted purpose.
+
+## Noncommercial Organizations
+
+Use by any charitable organization, educational institution,
+public research organization, public safety or health
+organization, environmental protection organization,
+or government institution is use for a permitted purpose
+regardless of the source of funding or obligations resulting
+from the funding.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the
+law.  These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of
+your licenses to anyone else, or prevent the licensor from
+granting licenses to anyone else.  These terms do not imply
+any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or
+contributes to infringement of any patent, your patent license
+for the software granted under these terms ends immediately. If
+your company makes such a claim, your patent license ends
+immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have
+violated any of these terms, or done anything with the software
+not covered by your licenses, your licenses can nonetheless
+continue if you come into full compliance with these terms,
+and take practical steps to correct past violations, within
+32 days of receiving notice.  Otherwise, all your licenses
+end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without
+any warranty or condition, and the licensor will not be liable
+to you for any damages arising out of these terms or the use
+or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these
+terms, and the **software** is the software the licensor makes
+available under these terms.
+
+**You** refers to the individual or entity agreeing to these
+terms.
+
+**Your company** is any legal entity, sole proprietorship,
+or other kind of organization that you work for, plus all
+organizations that have control over, are under the control of,
+or are under common control with that organization.  **Control**
+means ownership of substantially all the assets of an entity,
+or the power to direct its management and policies by vote,
+contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the
+software under these terms.
+
+**Use** means anything you do with the software requiring one
+of your licenses.
+
+
+-------------------------------------------------------------------------------
+SCOPE OF THIS LICENCE — WHAT IT DOES AND DOES NOT COVER
+-------------------------------------------------------------------------------
+
+THIS LICENCE COVERS ALOUD'S OWN SOURCE CODE ONLY.
+
+It does NOT cover, and does not purport to restrict your rights in:
+
+1. THE SUPERTONIC 3 MODEL WEIGHTS. Aloud speaks using the Supertonic 3 model.
+   The model *weights* are not MIT and are not covered by these terms. They are
+   released by Supertone Inc. under the BigScience Open RAIL-M License, which
+   carries USE RESTRICTIONS that this licence does not — see
+   LICENSES/supertonic-weights-OpenRAIL-M.txt and TERMS.md. The weights are not
+   contained in this repository; you obtain them yourself, directly from
+   Supertone, and you accept Supertone's licence when you do. Conflating the
+   two licences is the specific mistake this note exists to prevent.
+
+2. THE VENDORED SUPERTONIC ENGINE CODE at src/vendor/supertonic/, which is MIT
+   (Supertone Inc.) — see LICENSES/supertonic-MIT.txt.
+
+3. THIRD-PARTY COMPONENTS compiled into Aloud, each governed by its own licence
+   and listed in LICENSES/THIRD-PARTY.md. Some are Mozilla Public License 2.0.
+   Nothing in these terms alters or restricts your rights in the Source Code
+   Form of those components under MPL-2.0; that file tells you where to obtain
+   their source. ONNX Runtime (MIT, Microsoft) is linked as a prebuilt static
+   library and is covered by the same file.
+
+COMMERCIAL USE. If you want to use Aloud for a commercial purpose, that is not
+covered by these terms — contact the copyright holder for a commercial licence.
 
 ```
 

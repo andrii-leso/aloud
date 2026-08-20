@@ -14,7 +14,9 @@ that looks complete.
 ## The two Supertonic licences are not the same licence
 
 This is the mistake the project is most likely to make, so it is written down
-twice. **Code is MIT. Weights are BigScience Open RAIL-M.** MIT is permissive;
+twice. **Supertonic's code is MIT. Supertonic's weights are BigScience Open
+RAIL-M.** (Aloud's *own* code is neither — it is PolyForm Noncommercial 1.0.0,
+see the root `LICENSE`.) MIT is permissive;
 Open RAIL-M is permissive *plus* a set of use restrictions in its Attachment A,
 which a downstream distributor has to pass on. Commercial use is permitted and
 royalty-free either way — the obligations are paperwork, not a fee.

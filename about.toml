@@ -11,15 +11,24 @@
 #
 # `accepted` is also a PREFERENCE ORDER: for a crate offering a choice
 # ("MIT OR Apache-2.0"), cargo-about picks the earliest match here. MIT is
-# first so dual-licensed crates resolve to the same licence Aloud itself
-# ships under.
+# first because it is the commonest permissive choice in this tree, NOT
+# because it is Aloud's own licence -- Aloud is PolyForm Noncommercial 1.0.0
+# as of 2026-08-16 (see LICENSE). The two are unrelated: a dependency's
+# licence governs that dependency, not the work that links it.
 #
 # Every entry below was found in the actual tree, not copied from a template.
 # Do not add a licence here to silence an error without reading what it
 # requires — that is the whole failure mode this file guards against.
 
 accepted = [
-    # Aloud's own licence, and the overwhelming majority of the tree.
+    # Aloud's OWN licence. Not a dependency licence -- it is here only so
+    # cargo-about can resolve the root crate. Aloud moved from MIT to
+    # PolyForm Noncommercial on 2026-08-16, before the repo was made public,
+    # to keep a paid version possible: restrictive -> permissive is always
+    # available later, permissive -> restrictive never is.
+    "PolyForm-Noncommercial-1.0.0",
+
+    # The overwhelming majority of the dependency tree.
     "MIT",
     "Apache-2.0",
 

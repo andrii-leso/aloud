@@ -451,3 +451,39 @@ indication that the thing you pointed at was withheld.
   ⌥⇧⌘A would pull focus off whatever you were reading. It gives focus
   back by hiding itself, which also hides the Settings window if it
   happened to be open. Reopen it from the menu bar; nothing is lost.
+
+## Licence
+
+Aloud is licensed under [PolyForm Noncommercial 1.0.0](LICENSE). **Free for
+personal use and for any noncommercial purpose**, including by nonprofits and
+in education. Commercial use needs a separate licence — open an issue.
+
+The source is here to read, fork, and modify for those purposes. It is not
+"open source" in the OSI sense, and calling it that would be inaccurate;
+"source available" is the honest phrase. The restriction exists so that a paid
+version stays possible later: a permissive licence cannot be tightened once
+published, while a restrictive one can always be loosened.
+
+**Pull requests are not accepted** — see [CONTRIBUTING.md](CONTRIBUTING.md) for
+why that follows directly from the licence, and for what does help instead.
+
+Three things Aloud's licence does **not** cover, because they are not Aloud's
+to license:
+
+- **The Supertonic model weights** (~385 MB), which the app downloads at
+  runtime and which are **not** in this repository or in the binary. They are
+  licensed by Supertone under [BigScience OpenRAIL-M][openrail] — a licence
+  with **use restrictions**, not merely attribution. You accept it directly
+  when you download them.
+- **The vendored Supertonic engine code** at `src/vendor/supertonic/`, which is
+  MIT (Supertone Inc.).
+- **Every third-party component compiled in** — 550 crates plus ONNX Runtime,
+  each under its own licence, listed in [`LICENSES/THIRD-PARTY.md`](LICENSES/THIRD-PARTY.md).
+  Some are MPL-2.0; nothing here restricts your rights to their source under
+  that licence.
+
+The code licence and the weights licence are separate things and conflating
+them is the specific mistake to avoid. [`LICENSES/README.md`](LICENSES/README.md)
+spells out the split.
+
+[openrail]: LICENSES/supertonic-weights-OpenRAIL-M.txt
