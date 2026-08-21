@@ -467,6 +467,13 @@ published, while a restrictive one can always be loosened.
 **Pull requests are not accepted** — see [CONTRIBUTING.md](CONTRIBUTING.md) for
 why that follows directly from the licence, and for what does help instead.
 
+**Using Aloud also means accepting [TERMS.md](TERMS.md).** Those terms exist
+because the speech model carries *use restrictions* — things you may not do
+with it, listed in full there — and the model's licence requires them to be
+passed on to you as binding terms rather than mentioned in passing. They are
+short, and none of them will surprise you unless you were planning to
+impersonate someone.
+
 Three things Aloud's licence does **not** cover, because they are not Aloud's
 to license:
 

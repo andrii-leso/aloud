@@ -27,16 +27,39 @@ royalty-free either way — the obligations are paperwork, not a fee.
 
 ## What is still missing
 
-**An EULA mirroring Attachment A.** Open RAIL-M requires the use restrictions to
-be passed on to end users as enforceable terms. Aloud has no EULA. This is
-deliberately not drafted by an engineer — it routes to Rektor. Blocks
-distribution, not development.
-
 **The weights' licence does not currently travel with the weights.** The
 download procedure fetches `onnx/` and `voice_styles/` only, so a local model
 directory ends up with no `LICENSE` in it. Any procedure that copies the model —
 including the first-run downloader, when it is built — should copy
 `supertonic-weights-OpenRAIL-M.txt` alongside it.
+
+## The EULA — done, 2026-08-16, and the trigger date was wrong here
+
+`TERMS.md` at the repo root mirrors Attachment A (a)-(m) as binding terms.
+Drafted by Rektor, not by an engineer; full analysis and reasoning in
+`BKM/Expertise/German Law/Deliverables/aloud-licence-and-eula-2026-08.md`.
+
+**This section previously said "blocks distribution, not development". That
+was wrong**, and the correction is the reason the file exists at all. Open
+RAIL-M carries two obligations with *different* triggers:
+
+- **§4, the Distribution conditions**, genuinely does not apply. Aloud never
+  transmits the weights — the user downloads them at runtime and becomes
+  Supertone's direct licensee.
+- **§5's final sentence** — *"You shall require all of Your users who use the
+  Model ... to comply with the terms of this paragraph"* — sits **outside §4
+  and is not conditioned on Distribution at all.** It is triggered by having
+  **users**.
+
+So the obligation bites at **publication**, not at first sale. Confidence is
+honest rather than absolute: Open RAIL-M is unlitigated, and the argument is
+cost-asymmetry — one markdown file against a breach on the component that
+makes the product work.
+
+**Sequencing.** With no first-run downloader yet, `TERMS.md` plus the README
+notice discharges it. An in-app acceptance gate becomes required when that
+downloader is built, because at that point Aloud is the thing putting the
+weights on the user's disk.
 
 ## The third-party NOTICE — done, 2026-08-16
 
