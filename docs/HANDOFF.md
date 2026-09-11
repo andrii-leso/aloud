@@ -224,8 +224,12 @@ Runtime's own C++. App-local deployment is the answer; `make-win.ps1`'s header r
   heading heuristic in the normalizer.
 - M5 (custom per-monitor overlay) is lower value than originally thought — `screencapture`
   already handles multi-monitor natively.
-- Release paperwork still owed before any distribution: OpenRAIL-M Attachment A mirrored into
-  a EULA, the licence shipped, attribution retained. Rektor drafts it.
+- **Release paperwork is DONE, 2026-09-11 correction.** This entry said it was "still owed";
+  it had been discharged three weeks earlier and nobody updated the line. Attachment A is
+  mirrored into `TERMS.md` (Rektor, 2026-08-16); the third-party NOTICE is
+  `LICENSES/THIRD-PARTY.md` (`cargo-about`, 550 components, 2026-08-20); the two Supertonic
+  licence texts ship in `LICENSES/`. What is genuinely still owed before distribution is not
+  paperwork — see §8.
 
 ## 7. Machine notes
 
@@ -237,3 +241,39 @@ Runtime's own C++. App-local deployment is the answer; `make-win.ps1`'s header r
 - Synthesis speed is wholly load-dependent: the same sentence takes ~7s at load 4 and ~15s at
   load 24. The design spec's "~1.5s to first word" holds only on a genuinely idle machine,
   which is why the latency guard is a ratio and the absolute check is `#[ignore]`d.
+
+---
+
+## 8. What still blocks a public release — audited 2026-09-11
+
+The licence blockers this file and `CLAUDE.md` both used to name are discharged (§6). The repo
+itself is clean: 119 commits, 110 distinct paths, and a grep of every blob in every commit
+finds no personal identifiers, no inbox or vault paths, no `.env`. **Making the repo public is
+not blocked by anything in the repo.** What is missing is everything between "a developer can
+build this" and "a stranger can install and use it".
+
+**1. There is no first-run model downloader.** A grep of `src/` finds no download code at all.
+Aloud cannot speak without the 385 MB Supertonic model, and today the only ways to get one are
+to place it at the platform default or to set `$ALOUD_MODEL_DIR` by hand (`src/lib.rs`). This
+is the single biggest barrier: without it a release is a build-it-yourself repo, not an app.
+Building it also activates two obligations that are dormant only because it does not exist —
+the in-app acceptance gate (hard constraint 3) and copying the weights' licence beside the
+weights (`LICENSES/README.md`).
+
+**2. Signing is a development mechanism and does not survive leaving this machine.**
+`packaging/make-app.sh` hard-fails without a self-signed "Aloud Dev" certificate in the
+builder's own login keychain, and that is correct for development — it is what keeps the TCC
+grant alive across rebuilds (§3.1). But it means there is no artifact that can be handed to
+anyone. A distributable macOS build needs either an Apple Developer ID certificate plus
+notarization (a paid Apple Developer Program membership — **an owner spend decision, not an
+implementation detail**) or an honest unsigned release that documents the Privacy & Security →
+Open Anyway path the README already describes.
+
+**3. Nothing has ever been released, and the current build has never been bundled.** There are
+zero GitHub releases. Per §2, `packaging/make-app.sh` has not been run since the pause-chord
+removal, so the tray Pause item and ⌥⇧⌘A are unconfirmed in a running app. Bundling and
+installing once is the cheapest way to close that gap and is a prerequisite for any release.
+
+**Windows, secondary:** no selection reading, no launch-at-login, and `packaging\make-win.ps1`
+produces a folder beside a CRT, not an installer. A Windows release is a later decision than a
+macOS one.
